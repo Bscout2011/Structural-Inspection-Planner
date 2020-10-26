@@ -3,6 +3,7 @@
 import rospy
 import numpy as np
 import open3d as o3d
+from open3d.visualization import draw_geometries
 import copy
 from os.path import exists
 

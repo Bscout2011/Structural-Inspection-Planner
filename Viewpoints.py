@@ -26,7 +26,7 @@ from InvokeLKH import writeTSPLIBfile_FE, run_LKHsolver_cmd, rm_solution_file_cm
 # Initialize constants
 camera_position = np.array([30, 20, 30])
 BIG_BEN = "Mesh/BigBen.stl"
-TANK = "Mesh/Elevated_Tank.STL"
+TANK = "Mesh/ElevatedTank.stl"
 INCIDENCE_ANGLE = np.pi / 6  # facet field of view
 FOV = np.pi / 3  # camera field of view
 DMIN = 5
@@ -186,13 +186,14 @@ def obstacle_perimeter(obstacles):
 
 def viewpoint_clusters(viewpoints, d_cluster=D_CLUSTER):
     """
-    Compute Cost Matrix for distance between each point
+    Takes points and uses complete hierarchial clustering to return cluster centers in 2D
     \nReturns:
     cluster_groups: a list of group numbers for each viewpoint
     cluster_centers: a 2D XY array of cluster centers
     """
+    # TODO: use PRM to compute path distances.
     distMatrix = pdist(viewpoints)
-    Z = shc.average(distMatrix)
+    Z = shc.complete(distMatrix)
     cluster_groups = shc.fcluster(Z, D_CLUSTER, criterion='distance')
 
     n_clusters = max(cluster_groups)
@@ -203,6 +204,16 @@ def viewpoint_clusters(viewpoints, d_cluster=D_CLUSTER):
         cluster_centers[c] = np.median(view_group, axis=0)
 
     return cluster_groups, cluster_centers
+
+
+def create_viewpoints(mesh_model):
+    """
+    Given a mesh model, create a viewpoint 1m away from the first vertex.
+    """
+    unit_norm = mesh_model.normals / np.linalg.norm(mesh_model.normals, axis=1)[:, None]
+    viewpoints = mesh_model.v0 + unit_norm
+    normal = viewpoints - mesh_model.v0
+    return viewpoints, normal
 
 
 def main():
@@ -259,7 +270,7 @@ def main():
     #             marker='o', color='green')
 
     # Show all viewpoints and Optimal path between them
-    cluster_groups = viewpoint_clusters(viewpoints)
+    cluster_groups, cluster_centers = viewpoint_clusters(viewpoints)
     colors = cm.get_cmap()
     axes.scatter(xs=viewpoints[:, 0], ys=viewpoints[:, 1], zs=viewpoints[:, 2], marker='o', c=cluster_groups, cmap='RdYlBu')
 

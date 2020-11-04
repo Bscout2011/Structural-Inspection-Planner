@@ -9,32 +9,47 @@ import math
 import numpy as np
 import rospy
 from Viewpoints import TANK, load_mesh, viewpoint_clusters
+from probabilistic_road_map import prm_planning
 from matplotlib import cm
+from Viewpoints import TANK, create_obstacles, load_mesh, create_viewpoints, viewpoint_clusters
 
 
 def readPoints():
     # Load the model
+    print("Loading Model")
     mesh_model, facets, incidence_normals, mesh_centers, n = load_mesh(TANK)
+    obstacles = create_obstacles(facets)
+    viewpoints, normals = create_viewpoints(mesh_model)
+    cluster_groups, cluster_centers = viewpoint_clusters(viewpoints)
 
-    # Initialize viewpoints along facet normal
-    unit_norm = mesh_model.normals / np.linalg.norm(mesh_model.normals, axis=1)[:, None]
-    viewpoints = mesh_model.v0 + unit_norm
+    n_clusters = cluster_centers.shape[0]
 
-    groups, centers = viewpoint_clusters(viewpoints)
+    # Probabilistic Road Map algorithm
+    print("Running Probabilistic Road Map algorithm on {} clusters.".format(n_clusters))
+    robot_size = .5  # [m]
+    goal_points, feasible_dist, tsp_path = prm_planning(cluster_centers, obstacles, robot_size)
 
+    # For each goal point, get heading to first viewpoint in that group
+    goal_heading_xy = np.zeros((n_clusters, 2))
+    for g in range(n_clusters):
+        goal = goal_points[g]
+        view_group_idx = cluster_groups == (g+1)
+        view_group = viewpoints[view_group_idx]
+        goal_heading_xy[g] = view_group[0][:2] - goal
 
-    return viewpoints, groups, centers
+    return viewpoints, cluster_groups, goal_points, goal_heading_xy
 
 
 
 def main():
-    list_, groups, centers = readPoints()
+    list_, groups, centers, goal_heading_xy = readPoints()
     offset = np.array([2, 5, 0])
     list_ += offset  # offset the model from the origin in Gazebo
     centers += offset[:2]
     cmap = cm.get_cmap('RdBu')
 
     topic = 'visualization_traj'
+    print("Publishing topic {}".format(topic))
     publisher = rospy.Publisher(topic, MarkerArray, queue_size=5)
 
     rospy.init_node('register')

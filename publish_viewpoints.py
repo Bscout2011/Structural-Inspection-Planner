@@ -26,13 +26,87 @@ def readPoints():
     return viewpoints, groups, centers
 
 
+def rand_cmap(nlabels, type='bright', first_color_black=True, last_color_black=False, verbose=True):
+    """
+    Creates a random colormap to be used together with matplotlib. Useful for segmentation tasks
+    :param nlabels: Number of labels (size of colormap)
+    :param type: 'bright' for strong colors, 'soft' for pastel colors
+    :param first_color_black: Option to use first color as black, True or False
+    :param last_color_black: Option to use last color as black, True or False
+    :param verbose: Prints the number of labels and shows the colormap. True or False
+    :return: colormap for matplotlib
+    """
+    from matplotlib.colors import LinearSegmentedColormap
+    import colorsys
+    import numpy as np
+
+
+    if type not in ('bright', 'soft'):
+        print ('Please choose "bright" or "soft" for type')
+        return
+
+    if verbose:
+        print('Number of labels: ' + str(nlabels))
+
+    # Generate color map for bright colors, based on hsv
+    if type == 'bright':
+        randHSVcolors = [(np.random.uniform(low=0.0, high=1),
+                          np.random.uniform(low=0.2, high=1),
+                          np.random.uniform(low=0.9, high=1)) for i in xrange(nlabels)]
+
+        # Convert HSV list to RGB
+        randRGBcolors = []
+        for HSVcolor in randHSVcolors:
+            randRGBcolors.append(colorsys.hsv_to_rgb(HSVcolor[0], HSVcolor[1], HSVcolor[2]))
+
+        if first_color_black:
+            randRGBcolors[0] = [0, 0, 0]
+
+        if last_color_black:
+            randRGBcolors[-1] = [0, 0, 0]
+
+        random_colormap = LinearSegmentedColormap.from_list('new_map', randRGBcolors, N=nlabels)
+
+    # Generate soft pastel colors, by limiting the RGB spectrum
+    if type == 'soft':
+        low = 0.6
+        high = 0.95
+        randRGBcolors = [(np.random.uniform(low=low, high=high),
+                          np.random.uniform(low=low, high=high),
+                          np.random.uniform(low=low, high=high)) for i in xrange(nlabels)]
+
+        if first_color_black:
+            randRGBcolors[0] = [0, 0, 0]
+
+        if last_color_black:
+            randRGBcolors[-1] = [0, 0, 0]
+        random_colormap = LinearSegmentedColormap.from_list('new_map', randRGBcolors, N=nlabels)
+
+    # Display colorbar
+    if verbose:
+        from matplotlib import colors, colorbar
+        from matplotlib import pyplot as plt
+        fig, ax = plt.subplots(1, 1, figsize=(15, 0.5))
+
+        bounds = np.linspace(0, nlabels, nlabels + 1)
+        norm = colors.BoundaryNorm(bounds, nlabels)
+
+        cb = colorbar.ColorbarBase(ax, cmap=random_colormap, norm=norm, spacing='proportional', ticks=None,
+                                   boundaries=bounds, format='%1i', orientation=u'horizontal')
+        # plt.show()
+
+    return random_colormap
 
 def main():
     list_, groups, centers = readPoints()
-    offset = np.array([2, 5, 0])
+    # print("list = {}".format(list_))
+    # print("group = {}".format(groups))
+    offset = np.array([1, 2.5, 0])
     list_ += offset  # offset the model from the origin in Gazebo
     centers += offset[:2]
-    cmap = cm.get_cmap('RdBu')
+    # cmap = cm.get_cmap('RdBu')
+    cmap = rand_cmap(np.max(groups)+2, type='bright', first_color_black=True, last_color_black=False, verbose=True)
+    
 
     topic = 'visualization_traj'
     publisher = rospy.Publisher(topic, MarkerArray, queue_size=5)
@@ -47,7 +121,11 @@ def main():
     # Publish the Viewpoint Markers
     for elem, group in zip(list_, groups):
         marker = Marker()
-        color = cmap(group)
+        if(elem[2]>1.5 or elem[2]<0.0):
+            color = cmap(0)
+        else:
+            color = cmap(group)
+        print("color = ", color)
         # marker.header.frame_id = "/bvr_SIM/bvr_base_inertia"
         # bvr_SIM/bvr_base_link
         marker.header.frame_id = "map"

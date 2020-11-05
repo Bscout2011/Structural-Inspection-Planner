@@ -86,19 +86,22 @@ def prm_planning(goals, obstacles, rr):
     goal_points = np.array(goal_points)
 
     # Return goal coordinates, and tsp_path
-    return goal_points, feasible_dist, tsp_path
+    return goal_points, feasible_dist, tsp_path, np.array((sample_x, sample_y)).T
 
 
-def plot_tsp():
+def num_infeasible_goals(feasible_dist):
     # Show off total distance and number of infeasible goals
     t_dist = 0
     num_infeasible_goals = 0
-    for goal in goal_edges:
-        t_dist += goal[0]
-        if goal[0] > 0:
+    for d in feasible_dist:
+        t_dist += d
+        if d > 0:
             num_infeasible_goals += 1
 
-    print("Total infeasible goals {} / {}. Total distance shortened {:.1f} [m]".format(num_infeasible_goals, len(goal_edges), t_dist))
+    print("Total infeasible goals {} / {}. Total distance shortened {:.1f} [m]".format(num_infeasible_goals, len(feasible_dist), t_dist))
+
+
+def plot_tsp(goal_points, feasible_dist, tsp_path, obstacles, samples):
 
     # Plot 2D obstacles
     fig, ax = plt.subplots()
@@ -112,26 +115,25 @@ def plot_tsp():
     ax.set_ylabel('Y')
 
     # For each goal, label goal point and feasible point with an edge
-    for g, goal in enumerate(goal_edges):
+    for g, goal in enumerate(goal_points):
         
         # plt.gcf().canvas.mpl_connect(
         #     'key_release_event',
         #     lambda event: [exit(0) if event.key == 'escape' else None])
-        if goal[0] == 0:
+        if feasible_dist[g] == 0:
             # print(f"Goal {g} is feasible.")
-            ax.plot(sample_x[goal[1]], sample_y[goal[1]], "+b")
+            ax.plot(goal[0], goal[1], "+b")
         else:
             # print(f"Goal {g} is infeasible. Closest point is {goal[0]:.1f} [m] away. ", end="")
             g_idx = g + N_SAMPLE
-            goal_p = goals[g]
-            neighbor_p = (sample_x[goal[1]], sample_y[goal[1]])
+            neighbor_p = (samples[g_idx, 0], samples[g_idx, 1])
             # print(f"Goal ({goal_p[0]:.1f}, {goal_p[1]:.1f}), Nearest Neighbor ({neighbor_p[0]:.1f}, {neighbor_p[1]:.1f}).")
             # ax.plot(
             #     [neighb or_p[0], goal_p[0]],
             #     [neighbor_p[1], goal_p[1]],
             #     "-r"
             # )
-            ax.plot(goal_p[0], goal_p[1], "+b")
+            ax.plot(goal[0], goal[1], "+b")
             ax.plot(neighbor_p[0], neighbor_p[1], ".b")
             
         # plt.pause(0.01)
@@ -139,11 +141,11 @@ def plot_tsp():
     # Plot the TSP path
     n_p = len(tsp_path)
     for i in range(n_p - 1):
-        p0 = feasible_goal_idx[tsp_path[i]]
-        p1 = feasible_goal_idx[tsp_path[i + 1]]
+        p0 = goal_points[tsp_path[i]]
+        p1 = goal_points[tsp_path[i + 1]]
         ax.plot(
-            [sample_x[p0], sample_x[p1]],
-            [sample_y[p0], sample_y[p1]],
+            [p0[0], p1[0]],
+            [p0[1], p1[1]],
             "-g"
         )
 
@@ -463,7 +465,7 @@ def main():
     print("Loading Model")
     mesh_model, facets, incidence_normals, mesh_centers, n = load_mesh(TANK)
     obstacles = create_obstacles(facets)
-    viewpoints = create_viewpoints(mesh_model)
+    viewpoints, normals = create_viewpoints(mesh_model)
     cluster_groups, cluster_centers = viewpoint_clusters(viewpoints)
 
     n_clusters = cluster_centers.shape[0]
@@ -471,8 +473,8 @@ def main():
     # Probabilistic Road Map algorithm
     print("Running Probabilistic Road Map algorithm on {} clusters.".format(n_clusters))
     robot_size = .5  # [m]
-    goal_points, feasible_dist, tsp_path = prm_planning(cluster_centers, obstacles, robot_size)
-
+    goal_points, feasible_dist, tsp_path, samples = prm_planning(cluster_centers, obstacles, robot_size)
+    plot_tsp(goal_points, feasible_dist, tsp_path, obstacles, samples)
 
 if __name__ == '__main__':
     main()

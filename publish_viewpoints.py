@@ -13,6 +13,9 @@ from probabilistic_road_map import prm_planning
 from matplotlib import cm
 from Viewpoints import TANK, create_obstacles, load_mesh, create_viewpoints, viewpoint_clusters
 
+MARKER_TOPIC = 'visualization_traj'
+BASE_POSE_TOPIC = 'base_goal_poses'
+
 
 def readPoints():
     # Load the model
@@ -37,18 +40,17 @@ def readPoints():
         view_group = viewpoints[view_group_idx]
         goal_heading_xy[g] = view_group[0][:2] - goal
 
-    return viewpoints, cluster_groups, goal_points, goal_heading_xy
+    return viewpoints, normals, cluster_groups, goal_points, goal_heading_xy
 
 
 
 def main():
-    list_, groups, centers, goal_heading_xy = readPoints()
+    list_, viewpoint_normals, groups, centers, goal_heading_xy = readPoints()
     offset = np.array([2, 5, 0])
     list_ += offset  # offset the model from the origin in Gazebo
     centers += offset[:2]
     cmap = cm.get_cmap('RdBu')
 
-    topic = 'visualization_traj'
     print("Publishing topic {}".format(topic))
     publisher = rospy.Publisher(topic, MarkerArray, queue_size=5)
 
@@ -115,6 +117,8 @@ def main():
     for m in markerArray.markers:
         m.id = id
         id += 1
+
+
 
         # Publish the MarkerArray
     while not rospy.is_shutdown():

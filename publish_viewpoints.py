@@ -30,7 +30,7 @@ def readPoints():
 
     # Probabilistic Road Map algorithm
     print("Running Probabilistic Road Map algorithm on {} clusters.".format(n_clusters))
-    robot_size = .6  # [m]
+    robot_size = 0.66  # [m]
     goal_points, feasible_dist, tsp_path, samples = prm_planning(cluster_centers, obstacles, robot_size)
 
     # For each goal point, get heading to first viewpoint in that group
@@ -80,6 +80,16 @@ def  pose_from_vector3D(position, dir_vec):
     pose.orientation.y /= norm
     pose.orientation.z /= norm
     pose.orientation.w /= norm
+
+    if(math.isnan(pose.orientation.x)):
+        pose.orientation.x = 0.0
+    if(math.isnan(pose.orientation.y)):
+        pose.orientation.y = 0.0
+    if(math.isnan(pose.orientation.z)):
+        pose.orientation.z = 0.0
+    if(math.isnan(pose.orientation.w)):
+        pose.orientation.w = 1.0
+
     return pose
 
 def rand_cmap(nlabels, type='bright', first_color_black=True, last_color_black=False, verbose=True):
@@ -228,6 +238,7 @@ def main():
         i+=1
     
     # Publish the Viewpoint Markers
+    # unique_arm_pts = []
     for view_pos, dir_vec, group in zip(viewpoints, normals, cluster_groups):
         marker = Marker()
         if(view_pos[2]>1.3 or view_pos[2]<0.0):

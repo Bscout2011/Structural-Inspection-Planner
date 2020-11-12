@@ -166,6 +166,10 @@ def rand_cmap(nlabels, type='bright', first_color_black=True, last_color_black=F
 def get3DDistance(a, b):
     return np.linalg.norm(a-b)
 
+def movePointAlongVector(point, vec):
+    new_pt = point + 0.7*vec
+    return new_pt
+
 def main():
     viewpoints, normals, cluster_groups, goal_points, goal_heading_xy = readPoints()
     # list_, viewpoint_normals, groups, centers, goal_heading_xy = readPoints()
@@ -205,7 +209,7 @@ def main():
         color = cmap(i)
         base_pose = Pose()
         marker.header.frame_id = "map"
-        marker.type = marker.ARROW
+        marker.type = marker.SPHERE
         marker.action = marker.ADD
         marker.scale.x = 0.5
         marker.scale.y = 0.5
@@ -225,7 +229,7 @@ def main():
             else:
                 exist_flag = False
                 for goal in unique_goal_points:
-                    if get3DDistance( np.array([base_pos[0], base_pos[1], 0.0]), np.array([goal[0], goal[1], 0.0]) ) < 0.2:
+                    if get3DDistance( np.array([base_pos[0], base_pos[1], 0.0]), np.array([goal[0], goal[1], 0.0]) ) < 0.35:
                         exist_flag = True
                         break
                 if exist_flag == False:
@@ -251,7 +255,8 @@ def main():
 
         if(group in valid_idx and (view_pos[1]<-0.05 or view_pos[0]<0.9) ):
         # if(view_pos[1]<-0.15 or view_pos[0]<0.8):
-            arm_pose = pose_from_vector3D(np.array([view_pos[0], view_pos[1] ,view_pos[2]]), np.array([-dir_vec[0], -dir_vec[1], -dir_vec[2]]))
+            aug_view = movePointAlongVector(np.array([view_pos[0], view_pos[1] ,view_pos[2]]), np.array([-dir_vec[0], -dir_vec[1], -dir_vec[2]]))
+            arm_pose = pose_from_vector3D(np.array([aug_view[0], aug_view[1] ,aug_view[2]]), np.array([-dir_vec[0], -dir_vec[1], -dir_vec[2]]))
 
             # marker.header.frame_id = "/bvr_SIM/bvr_base_inertia"
             # bvr_SIM/bvr_base_link

@@ -43,7 +43,6 @@ def readPoints():
     return viewpoints, normals, cluster_groups, goal_points, goal_heading_xy
 
 
-
 def main():
     list_, viewpoint_normals, groups, centers, goal_heading_xy = readPoints()
     offset = np.array([2, 5, 0])

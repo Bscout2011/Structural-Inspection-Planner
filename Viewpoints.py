@@ -107,10 +107,12 @@ def plot_tsp_path(axes, viewpoints):
 def load_mesh(model):
     """
     Load the STL files and add the vectors to the plot
-    \nReturns: 
+    
+    Returns: 
+
     mesh: Mesh object from numpy-stl   
     facets: (n, 3, 3) coordinate array of triangular facets
-    incidence_normals: incidence planes created by facet boundary 
+    unit_normals: unit normals for each facet
     mesh_centers: numpy array of facet center coordinates
     n: number of facets
     """
@@ -128,11 +130,9 @@ def load_mesh(model):
 
     # Compute incidence planes
     facets = your_mesh.points.reshape(-1, 3, 3)
-    incidence_normals = np.zeros(facets.shape)  # shape (n, 3, 3)
-    for i in range(facets.shape[0]):
-        incidence_normals[i] = incidence_plane(facets[i], your_mesh.normals[i])
+    unit_normals = your_mesh.normals / np.linalg.norm(your_mesh.normals, axis=1)[:, None]
 
-    return your_mesh, facets, incidence_normals, mesh_centers, n
+    return your_mesh, facets, unit_normals, mesh_centers, n
 
 
 def create_obstacles(facets):
@@ -206,52 +206,57 @@ def viewpoint_clusters(viewpoints, d_cluster=D_CLUSTER):
     return cluster_groups, cluster_centers
 
 
-def create_viewpoints(mesh_model):
+def create_viewpoints(mesh_model, incidence_angle=INCIDENCE_ANGLE, dmin=.1, dmax=2):
     """
     Given a mesh model, create a viewpoint 1m away from the first vertex.
+    Constraints:
+    Below height threshold.
+    Above the ground.
+    Not inside an object.
+    Within incidence angle of a facet
     """
     unit_norm = mesh_model.normals / np.linalg.norm(mesh_model.normals, axis=1)[:, None]
+
+    # For all points in the mesh calculate a rectangular region to sample points from
     viewpoints = mesh_model.v0 + unit_norm
     normal = viewpoints - mesh_model.v0
     return viewpoints, normal
+
+
+def plot_3d_object_viewpoints(mesh_model, viewpoints):
+    # Create a new plot
+    figure = pyplot.figure()
+    axes = mplot3d.Axes3D(figure)
+
+    # Add polygon with view color to matplotlib figure
+    polygon = mplot3d.art3d.Poly3DCollection(mesh_model.vectors)
+    axes.add_collection3d(polygon)
+    axes.scatter(xs=viewpoints[:, 0], ys=viewpoints[:, 1], zs=viewpoints[:, 2], marker='o', c='r')
+
+    # Auto scale to the mesh size
+    scale = mesh_model.points.flatten()
+    axes.auto_scale_xyz(scale, scale, scale)
+    axes.set_xlabel('X')
+    axes.set_ylabel('Y')
+    axes.set_zlabel('Z')
+
+    # Show the plot to the screen
+    pyplot.show()
 
 
 def main():
 
     # Load the model
     mesh_model, facets, incidence_normals, mesh_centers, n = load_mesh(model)
-
+    plot_3d_object_viewpoints(mesh_model, np.zeros((1, 3)))
     # Initialize viewpoints along facet normal
     viewpoints = mesh_model.v0 + mesh_model.normals
-
-    n_lengths = np.linalg.norm(mesh_model.normals, axis=-1)
-    print "Mesh Normals: ", n_lengths
-
-    rand_idx = np.random.randint(viewpoints.shape[0], size=10)
-    camera_positions = viewpoints[rand_idx]
-    visible = [visible_facets(pos, mesh_model) for pos in camera_positions]
-    visible = np.unique(np.concatenate(visible))
 
     # Rasterization algorithm to determine if facet is not obscured by another object
     # TODO: How to determine whether a facet is in front of another facet given a camera point
 
-    print("{} facets out of {} are visible to the {} viewpoints".format(visible.shape[0], mesh_model.v0.shape[0], camera_positions.shape[0]))
 
-    # Create a new plot
-    figure = pyplot.figure()
-    axes = mplot3d.Axes3D(figure)
-
-    # Set colors.
-    cmap = cm.get_cmap('Blues')
-    # colors = [cmap(-1 * normal) for normal in normals]
-    colors = np.ones(n)
-    colors[visible] = 0
-    colors = cmap(colors)
-    # Add polygon with view color to matplotlib figure
-    polygon = mplot3d.art3d.Poly3DCollection(mesh_model.vectors, facecolors=colors)
-
-    axes.add_collection3d(polygon)
-
+    
     # Add Camera to plot
     # axes.scatter(xs=camera_positions[0], ys=camera_positions[1], zs=camera_positions[2], marker='o', color='red')
 
@@ -272,20 +277,7 @@ def main():
     # Show all viewpoints and Optimal path between them
     cluster_groups, cluster_centers = viewpoint_clusters(viewpoints)
     colors = cm.get_cmap()
-    axes.scatter(xs=viewpoints[:, 0], ys=viewpoints[:, 1], zs=viewpoints[:, 2], marker='o', c=cluster_groups, cmap='RdYlBu')
 
-    # plot_tsp_path(axes, viewpoints)
-
-
-    # Auto scale to the mesh size
-    scale = mesh_model.points.flatten()
-    axes.auto_scale_xyz(scale, scale, scale)
-    axes.set_xlabel('X')
-    axes.set_ylabel('Y')
-    axes.set_zlabel('Z')
-
-    # Show the plot to the screen
-    pyplot.show()
 
     obstacles = create_obstacles(facets)
 

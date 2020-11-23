@@ -1,4 +1,4 @@
-PROBLEM_FILE = /home/alw/autonomous_mobile_manipulation_ws/src/siplanner/TSPLIB/ClusterPaths.tsp
+PROBLEM_FILE = /home/prateek/robowork_ws/src/siplanner/TSPLIB/ClusterPaths.tsp
 OPTIMUM 378032
 MOVE_TYPE = 5
 PATCHING_C = 3

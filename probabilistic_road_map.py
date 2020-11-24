@@ -23,7 +23,7 @@ from Viewpoints import TANK, create_obstacles, load_mesh, create_viewpoints, vie
 # parameter
 N_SAMPLE = 500  # number of sample_points
 N_KNN = 10  # number of edge from one sampled point
-MAX_EDGE_LEN = 30.0  # [m] Maximum edge length
+MAX_EDGE_LEN = 5.0  # [m] Maximum edge length
 
 show_animation = True
 
@@ -221,6 +221,10 @@ def generate_road_map(sample_x, sample_y, rr, obstacle_kd_tree):
     sample_y: [m] y positions of sampled points
     rr: Robot Radius[m]
     obstacle_kd_tree: KDTree object of obstacles
+
+    Returns:
+    road_map: adjacency list of graph edges
+    sample_kd_tree: cKDTree of nodes in the free space
     """
 
     road_map = []
@@ -243,8 +247,6 @@ def generate_road_map(sample_x, sample_y, rr, obstacle_kd_tree):
                 break
 
         road_map.append(edge_id)
-
-    #  plot_road_map(road_map, sample_x, sample_y)
 
     return road_map, sample_kd_tree
 
@@ -425,18 +427,17 @@ def plot_goal_road_map(road_map, goals, sample_kd_tree):
                 "-g")
 
 
-def sample_points(goals, rr, obstacle_kd_tree):
+def sample_points(rr, obstacle_kd_tree, boundary=3):
     """
     Randomly sample points in the free configuration space.
-    Last n_g points are goals, which may not be in free configuration space.
     Returns sample_x, sample_y
     """
     max_x, max_y = obstacle_kd_tree.maxes
     min_x, min_y = obstacle_kd_tree.mins
-    max_x += 5
-    min_x -= 5
-    max_y += 5
-    min_y -= 5
+    max_x += boundary
+    min_x -= boundary
+    max_y += boundary
+    min_y -= boundary
 
     sample_x, sample_y = [], []
 
@@ -450,9 +451,10 @@ def sample_points(goals, rr, obstacle_kd_tree):
             sample_x.append(tx)
             sample_y.append(ty)
 
-    for g in range(goals.shape[0]):
-        sample_x.append(goals[g,0])
-        sample_y.append(goals[g,1])
+    # Removing goals from initial PRM generation. -ALW 23Nov20
+    # for g in range(goals.shape[0]):
+    #     sample_x.append(goals[g,0])
+    #     sample_y.append(goals[g,1])
 
     return sample_x, sample_y
 

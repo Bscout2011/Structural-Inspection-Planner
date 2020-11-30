@@ -66,7 +66,7 @@ def load_mesh(model):
     return your_mesh, facets, unit_normals, mesh_centers, n
 
 
-def sample_cone_region(mu=500, incidence_angle=INCIDENCE_ANGLE, dmin=DMIN, dmax=DMAX):
+def sample_cone_region(mu=500, incidence_angle=INCIDENCE_ANGLE, dmin=DMIN, dmax=DMAX, plot=False):
     """
     Generate mu points within a cone.
 
@@ -90,7 +90,69 @@ def sample_cone_region(mu=500, incidence_angle=INCIDENCE_ANGLE, dmin=DMIN, dmax=
             # add to cone_points
             cone_points[i] = point
             i = i + 1
+
+    if plot:
+        # Create plot window with robot config sample space
+        fig, ax = plt.subplots()
+        ax.plot(cone_points[:,0], cone_points[:,2], 'bo')
+        ax.set_ylim([0, dmax*1.05])
+        ax.axis('equal')
+        ax.axis('off')
+        # Plot centerline
+        ax.plot([0, 0], [dmin, .6], 'k-')
+        # Plot the angle constraint edges
+        corners = np.array(
+            [[dmin * np.sin(incidence_angle), dmin*np.cos(incidence_angle)],
+            [dmax * np.sin(incidence_angle), dmax*np.cos(incidence_angle)]]
+        )
+        ax.plot(corners[:,0], corners[:,1], 'k--')
+        ax.plot(-corners[:,0], corners[:,1], 'k--')
+        # Plot the distance min and max edges
+        angles = np.linspace(-incidence_angle, incidence_angle, 50)
+        arc_min_x = dmin * np.sin(angles)
+        arc_min_y = dmin * np.cos(angles)
+        arc_max_x = dmax * np.sin(angles)
+        arc_max_y = dmax * np.cos(angles)
+        ax.plot(arc_min_x, arc_min_y, 'k--')
+        ax.plot(arc_max_x, arc_max_y, 'k--')
+        # Annotate plot
+        ax.annotate(r"$\tau$", [.3, .3], size=25)
+        draw_angle(incidence_angle, np.pi / 2 - incidence_angle)
+        ax.annotate("dmin", [corners[0,0]+.1, corners[0, 1]], size=25)
+        ax.annotate("dmax", [corners[1,0]-.1, corners[1, 1]+.1], size=25)
+
+        plt.show()
+
     return cone_points
+
+
+def transform_points(points, theta, origin):
+    T = np.array([[np.cos(theta), -np.sin(theta), origin[0]],
+                  [np.sin(theta), np.cos(theta), origin[1]],
+                  [0, 0, 1]])
+    return np.matmul(T, np.array(points))
+
+
+def draw_angle(angle, offset=0, origin=[0, 0], r=0.5, n_points=100):
+        """
+        Effect:
+            draws on pyplot an arc
+        """
+        x_start = r*np.cos(angle)
+        x_end = r
+        dx = (x_end - x_start)/(n_points-1)
+        coords = [[0 for _ in range(n_points)] for _ in range(3)]
+        x = x_start
+        for i in range(n_points-1):
+            y = np.sqrt(r**2 - x**2)
+            coords[0][i] = x
+            coords[1][i] = y
+            coords[2][i] = 1
+            x += dx
+        coords[0][-1] = r
+        coords[2][-1] = 1
+        coords = transform_points(coords, offset, origin)
+        plt.plot(coords[0], coords[1], 'k--')
 
 
 def transform_cone(cone_points, point, normal):
@@ -357,12 +419,33 @@ def plot_sideview(mesh_model):
     plt.show()
 
 
+def plot_model_normals(model):
+    mesh_model, facets, unit_norms, mesh_centers, n = load_mesh(model)
+    # Create a new plot
+    figure = plt.figure()
+    axes = mplot3d.Axes3D(figure)
+    points = mesh_model.points.reshape(-1, 3)
+    # unit_norms = np.array([val for val in unit_norms for _ in range(3)])
+    
+    polygon = mplot3d.art3d.Poly3DCollection(mesh_model.vectors, linewidth=.1, edgecolor=(0, 0, 0), facecolor=(0, 0, 1, .2))
+    axes.add_collection3d(polygon)
+
+    for i in range(facets.shape[0]):
+        axes.plot(
+            [mesh_centers[i,0], mesh_centers[i,0] + unit_norms[i,0]],
+            [mesh_centers[i,1], mesh_centers[i,1] + unit_norms[i,1]],
+            [mesh_centers[i,2], mesh_centers[i,2] + unit_norms[i,2]],
+        )
+    plt.show()
+
 
 def main():
-    viewpoints = dual_viewpoint_sampling(TANK, ROBOT_RADIUS, ARM_LENGTH, plot=True)
+    # viewpoints = dual_viewpoint_sampling(TANK, ROBOT_RADIUS, ARM_LENGTH, plot=True)
     # stuff = load_mesh(TANK)
     # mesh_model = stuff[0]
     # plot_sideview(mesh_model)
+    # plot_model_normals(TANK)
+    sample_cone_region(plot=True)
 
 
 if __name__ == "__main__":

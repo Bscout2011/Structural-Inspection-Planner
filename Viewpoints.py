@@ -63,7 +63,7 @@ def rand_cmap(nlabels, type='bright', first_color_black=True, last_color_black=F
     if type == 'bright':
         randHSVcolors = [(np.random.uniform(low=0.0, high=1),
                           np.random.uniform(low=0.2, high=1),
-                          np.random.uniform(low=0.9, high=1)) for i in xrange(nlabels)]
+                          np.random.uniform(low=0.9, high=1)) for i in range(nlabels)]
 
         # Convert HSV list to RGB
         randRGBcolors = []
@@ -84,7 +84,7 @@ def rand_cmap(nlabels, type='bright', first_color_black=True, last_color_black=F
         high = 0.95
         randRGBcolors = [(np.random.uniform(low=low, high=high),
                           np.random.uniform(low=low, high=high),
-                          np.random.uniform(low=low, high=high)) for i in xrange(nlabels)]
+                          np.random.uniform(low=low, high=high)) for i in range(nlabels)]
 
         if first_color_black:
             randRGBcolors[0] = [0, 0, 0]
@@ -347,11 +347,13 @@ def main():
     #             marker='o', color='green')
 
     # Show all viewpoints and Optimal path between them
+    # figure = pyplot.figure()
+    # axes = mplot3d.Axes3D(figure)
     cluster_groups, cluster_centers = viewpoint_clusters(viewpoints)
     colors = cm.get_cmap()
     new_cmap = rand_cmap(np.max(cluster_groups[0]), type='bright', first_color_black=True, last_color_black=False, verbose=False)
     # axes.scatter(xs=viewpoints[:, 0], ys=viewpoints[:, 1], zs=viewpoints[:, 2], marker='o', c=cluster_groups, cmap='RdYlBu')
-    axes.scatter(xs=viewpoints[:, 0], ys=viewpoints[:, 1], zs=viewpoints[:, 2], marker='o', c=cluster_groups[0], cmap=new_cmap)
+    # axes.scatter(xs=viewpoints[:, 0], ys=viewpoints[:, 1], zs=viewpoints[:, 2], marker='o', c=cluster_groups[0], cmap=new_cmap)
     # plot_tsp_path(axes, viewpoints)
 
 

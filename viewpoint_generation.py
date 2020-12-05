@@ -31,6 +31,7 @@ CEILING = 2  # [m]
 FLOOR = 0.1  # [m]
 ROBOT_RADIUS = 0.5  # [m]
 ARM_LENGTH = 0.7  # [m]
+HEIGHT = .5  # robot arm base height
 TANK = "Mesh/ElevatedTank.stl"  # object to inspect
 CWD = os.path.dirname(os.path.abspath(__file__))
 
@@ -174,6 +175,50 @@ def transform_cone(cone_points, point, normal):
     return rotated_cone_points
 
 
+def ray_tracing(goal_idx, p_0, d, facets, normals):
+    """
+    Returns true if the goal facet as seen from the viewpoint is collision free.
+
+    Arguments:
+        goal_idx: index of facet to view
+        p_0: position to view from
+        d: viewpoint unit direction
+        facets: (n, 3, 3) ndarray of triangular facets
+        normals: (n, 3) unit normals corresponding to each facet
+
+    Returns:
+        True if goal facet can be seen. 
+        False if another facet is in the way.
+    """
+    n = facets.shape[0]     # number of facets
+    p = np.zeros((n, 3))    # intersection points
+    t = np.zeros(n)         # intersection distance
+
+    # Compute distance to intersect each facet plane
+    for i in range(n):
+        n_d = np.dot(facets[i, 0] - p_0, normals[i])
+        t[i] = n_d / np.dot(d, normals[i])
+        if t[i] > 0:  # only compute intersection if plane is in front of viewpoint
+            p[i] = p_0 + t[i] * d
+        # else:
+            # print("Plane is not visible from this direction")
+
+    # Given the intersection distance, is the intersected point within the triangluar facet
+    t_goal = t[goal_idx]
+    for i in range(n):
+        if (t[i] <= 0) or (t[i] > t_goal):
+            continue  # skip points behind viewpoint or further than goal
+        
+        edges = np.array([facets[i,v1] - facets[i,v0] for v0, v1 in ((0,1), (1, 2), (2, 0))])  
+        C = p[i] - facets[i]
+        result = np.array([np.dot(normals[i], np.cross(edges[j], C[j])) for j in range(3)])
+        res = np.all(result >= 0)
+        if res and t[i] < t_goal:
+            # print(f"Goal plane is blocked by plane {i}")
+            return False
+    return True
+
+
 def compute_visible_points(region, point, points, normals, viewed_points, arm_length, free_space_kdtree,
                         fov_angle=np.pi/4, incidence_angle=INCIDENCE_ANGLE, dmin=DMIN, dmax=DMAX, floor=FLOOR, ceiling=CEILING):
     """
@@ -183,7 +228,7 @@ def compute_visible_points(region, point, points, normals, viewed_points, arm_le
         region: viewpoints in the observable space
         point: the point where sampled a viewable region
         points: all the points in the object
-        normals: corresponding normals to each point
+        normals: corresponding unit normals to each point
         viewed_points: list of viewed points (0 corresponds to unseen)
         arm_length: max distance from point in free space to viewpoint
         free_space_kdtree: free configuration space of mobile robot
@@ -198,12 +243,20 @@ def compute_visible_points(region, point, points, normals, viewed_points, arm_le
     viewpoint_visible_point_indices = []  # indicies of viewed points
     viewpoint_visible_point_count = 0  # max number of visible points
     best_view = np.zeros((1, 6))
+    facets = points.reshape(-1, 3, 3)
+    facet_normals = normals.reshape(-1, 3, 3)[:,0,:]
     fov_cos_angle = np.cos(fov_angle)
     incidence_cos_angle = np.cos(incidence_angle)
     
     for viewpoint in region:
         if (viewpoint[2] < floor) or (viewpoint[2] > ceiling):
             continue  # viewpoint is out of reach
+        
+        # Check if within radius of point in the free workspace.
+        nearest_neighbors = free_space_kdtree.query_ball_point(viewpoint, arm_length)
+        if len(nearest_neighbors) == 0:
+            continue  # viewpoint is out of reach
+
         viewpoint_dir = point - viewpoint
         viewpoint_dir = viewpoint_dir / norm(viewpoint_dir)
 
@@ -222,10 +275,16 @@ def compute_visible_points(region, point, points, normals, viewed_points, arm_le
         # Filter points that haven't been seen yet
         unseen_boundary = viewed_points == 0
         
-        # TODO: ray-tracing to determine if there's a facet in front of this line of sight
-
         visible_points = np.all(np.stack((view_vector_distance, fov_visible, incidence_visible, unseen_boundary), axis=1), axis=1)
         visible_point_indices = np.argwhere(visible_points).squeeze()
+
+        # Ray-tracing to determine if there's a facet in front of this line of sight
+        ray_trace_visible = []
+        for point_idx in visible_point_indices:
+            facet_idx = point_idx // 3  # divide by three to get facet indexes
+            if ray_tracing(facet_idx, viewpoint, viewpoint_dir, facets, facet_normals):
+                ray_trace_visible.append(point_idx)
+        visible_point_indices = np.array(ray_trace_visible)
 
         if visible_point_indices.size > viewpoint_visible_point_count:
             viewpoint_visible_point_indices = visible_point_indices
@@ -268,7 +327,7 @@ def create_obstacles(facets):
     return obstacles
 
 
-def generate_prm(polygon, robot_radius, n_sample=500):
+def generate_prm(polygon, robot_radius, height, n_sample=500):
     """
     Given a stl mesh, generate a road map around the object representing the mobile robot's free space. 
     Arguments:
@@ -282,12 +341,12 @@ def generate_prm(polygon, robot_radius, n_sample=500):
     facets = polygon.points.reshape(-1, 3, 3)
     obstacle_kd_tree = create_obstacles(facets)
     sample_x, sample_y = sample_points(robot_radius, obstacle_kd_tree)
-    road_map, sample_kdtree = generate_road_map(sample_x, sample_y, robot_radius, obstacle_kd_tree)
+    road_map, sample_kdtree = generate_road_map(sample_x, sample_y, robot_radius, obstacle_kd_tree, height)
 
     return sample_kdtree, road_map
 
 
-def dual_viewpoint_sampling(polygon, robot_radius, arm_length, mu=500, constraints=None, plot=False):
+def dual_viewpoint_sampling(polygon, robot_radius, arm_length, height, mu=500, constraints=None, plot=False):
     """
     Arguments:
         polygon: path filename to a STL object
@@ -320,7 +379,7 @@ def dual_viewpoint_sampling(polygon, robot_radius, arm_length, mu=500, constrain
     cone_points = sample_cone_region(mu)
 
     # Generate a Probabilistic Road Map of the free space around the object
-    free_space_kdtree, road_map = generate_prm(mesh_model, robot_radius)
+    free_space_kdtree, road_map = generate_prm(mesh_model, robot_radius, height)
 
     # Loop until all points are seen, or could not be seen
     while np.any(unseen == 0):
@@ -338,6 +397,7 @@ def dual_viewpoint_sampling(polygon, robot_radius, arm_length, mu=500, constrain
             viewpoint, unseen, viewed_points = compute_visible_points(region, point, points, unit_norms, unseen, arm_length, free_space_kdtree)
             viewpoint_set.append(viewpoint)
             viewed_points_set.append(viewed_points)
+            print(f"{np.sum(unseen == 0)} / {unseen.shape[0]} mesh points unseen")
 
         except Exception:
             unseen[point_idx] = 2
@@ -385,37 +445,9 @@ def plot_3d_object_viewpoints(mesh_model, viewpoints, viewed_points_set):
     axes.set_xlabel('X')
     axes.set_ylabel('Y')
     axes.set_zlabel('Z')
+    axes.axis('off')
 
     # Show the plot to the screen
-    plt.show()
-
-
-def plot_sideview(mesh_model):
-    cone_points = sample_cone_region()
-    # get points on y-z max plane
-    mesh_points = mesh_model.points.reshape(-1, 3, 3)
-    rng = np.random.default_rng()
-    rand_idx = rng.integers(mesh_points.shape[0])
-    facet = mesh_points[rand_idx]
-    normal = mesh_model.normals[rand_idx]
-    unit_normal = normal / norm(normal)
-    region = transform_cone(cone_points, facet[0], normal)
-
-    diag = np.sqrt(2)/2
-    points = [
-        [-.5, 1],
-        [.5, 1],
-        [.5+diag, 1+diag],
-        [.5+diag, 2+diag],
-        [.5, 2+2*diag],
-        [-.5, 2+2*diag],
-        [-.5-diag, 2+diag],
-        [-.5-diag, 1+diag]
-    ]
-    points = np.array(points)
-    
-    fig, ax = plt.subplots()
-    ax.plot(points[:, 0], points[:, 1], 'bo')
     plt.show()
 
 
@@ -440,12 +472,12 @@ def plot_model_normals(model):
 
 
 def main():
-    # viewpoints = dual_viewpoint_sampling(TANK, ROBOT_RADIUS, ARM_LENGTH, plot=True)
+    viewpoints = dual_viewpoint_sampling(TANK, ROBOT_RADIUS, ARM_LENGTH, HEIGHT, plot=True)
     # stuff = load_mesh(TANK)
     # mesh_model = stuff[0]
     # plot_sideview(mesh_model)
     # plot_model_normals(TANK)
-    sample_cone_region(plot=True)
+    # sample_cone_region(plot=True)
 
 
 if __name__ == "__main__":

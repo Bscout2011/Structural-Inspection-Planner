@@ -61,11 +61,14 @@ def prm_planning(goals, obstacles, rr):
     obstacle_kd_tree = cKDTree(obstacles)
     # Sample points contains N_SAMPLE + n_g points
     print("PRM sample points")
-    sample_x, sample_y = sample_points(goals, rr, obstacle_kd_tree)
+    sample_x, sample_y = sample_points(rr, obstacle_kd_tree)
     
     # Add goals as an array. 
     print("Building road map")
     road_map, sample_kd_tree = generate_road_map(sample_x, sample_y, rr, obstacle_kd_tree)
+
+    plt.scatter(sample_kd_tree.data[:,0], sample_kd_tree.data[:,1], c='b')
+    plt.scatter(obstacle_kd_tree.data[:,0], obstacle_kd_tree.data[:,1], c='k')
 
     # Ensure all goals can be found from a single starting point
     bottom_left = sample_kd_tree.mins
@@ -213,18 +216,18 @@ def is_collision(sx, sy, gx, gy, rr, obstacle_kd_tree):
     return False  # OK
 
 
-def generate_road_map(sample_x, sample_y, rr, obstacle_kd_tree):
+def generate_road_map(sample_x, sample_y, rr, obstacle_kd_tree, height=0):
     """
-    Road map generation
-
-    sample_x: [m] x positions of sampled points
-    sample_y: [m] y positions of sampled points
-    rr: Robot Radius[m]
-    obstacle_kd_tree: KDTree object of obstacles
+    Road map generation of the free workspace. Returned graph is wholly connected.
+    Inputs:
+        sample_x: [m] x positions of sampled points
+        sample_y: [m] y positions of sampled points
+        rr: Robot Radius[m]
+        obstacle_kd_tree: KDTree object of obstacles
 
     Returns:
-    road_map: adjacency list of graph edges
-    sample_kd_tree: cKDTree of nodes in the free space
+        road_map: adjacency list of graph edges
+        sample_kd_tree: cKDTree of nodes in the free space
     """
 
     road_map = []
@@ -248,7 +251,36 @@ def generate_road_map(sample_x, sample_y, rr, obstacle_kd_tree):
 
         road_map.append(edge_id)
 
-    return road_map, sample_kd_tree
+    # Now prune the road map to include only the free workspace accessible from a long way away.
+    bottom_left = sample_kd_tree.mins
+    _, start_idx = sample_kd_tree.query(bottom_left)
+    # Breadth First Search through graph, getting all connected nodes.
+    colors = np.zeros(n_sample)  # 0 - white; 1 - gray; 2 - black
+    distance = np.zeros(n_sample) + np.Inf
+    parents = np.zeros(n_sample) + np.NAN
+    
+    colors[start_idx] = 1
+    distance[start_idx] = 0
+    parents[start_idx] = np.NAN
+
+    queue = [start_idx]
+    while len(queue) > 0:
+        u = queue.pop(0)
+        for v in road_map[u]:
+            if colors[v] == 0:
+                colors[v] = 1
+                distance[v] = distance[u] + 1
+                parents[v] = u
+                queue.append(v)
+        colors[u] = 2
+    # Extract point indicies in free workspace
+    free_points = np.argwhere(colors).squeeze()
+    free_graph = [road_map[p] for p in free_points]
+    x_free = [sample_x[i] for i in free_points]
+    y_free = [sample_y[i] for i in free_points]
+    free_kdtree = cKDTree(np.vstack((x_free, y_free, np.ones(len(x_free)) * height)).T)
+    
+    return free_graph, free_kdtree
 
 
 def connect_goals(start_idx, goals, road_map, sample_kd_tree):
@@ -459,6 +491,23 @@ def sample_points(rr, obstacle_kd_tree, boundary=3):
     return sample_x, sample_y
 
 
+def plot_freespace(rr):
+    mesh_model, facets, incidence_normals, mesh_centers, n = load_mesh(TANK)
+    obstacles = create_obstacles(facets)
+    obstacle_kd_tree = cKDTree(obstacles)
+    # Sample points contains N_SAMPLE + n_g points
+    print("PRM sample points")
+    sample_x, sample_y = sample_points(rr, obstacle_kd_tree)
+    
+    # Add goals as an array. 
+    print("Building road map")
+    road_map, sample_kd_tree = generate_road_map(sample_x, sample_y, rr, obstacle_kd_tree)
+
+    plt.scatter(sample_kd_tree.data[:,0], sample_kd_tree.data[:,1], c='b')
+    plt.scatter(obstacle_kd_tree.data[:,0], obstacle_kd_tree.data[:,1], c='k')
+    plt.show()
+
+
 def main():
     print(__file__ + " start!!")
 
@@ -478,5 +527,6 @@ def main():
     goal_points, feasible_dist, tsp_path, samples = prm_planning(cluster_centers, obstacles, robot_size)
     plot_tsp(goal_points, feasible_dist, tsp_path, obstacles, samples)
 
+
 if __name__ == '__main__':
-    main()
+    plot_freespace(.7)

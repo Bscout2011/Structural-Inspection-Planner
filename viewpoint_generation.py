@@ -16,6 +16,7 @@ from scipy.spatial import cKDTree
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import axes3d
 from mpl_toolkits import mplot3d
+import scipy.cluster.hierarchy as hcluster
 
 from os.path import exists, join
 import os
@@ -474,7 +475,7 @@ def convertToPose(viewpoint):
 import open3d as o3d
 # import numpy as np
 
-def collision_check(m_input,location, normal):
+def collision_check(m_input, location, normal):
     # Input mesh
     # m_input = o3d.io.read_triangle_mesh(mesh)
     # m_input = o3d.geometry.TriangleMesh.create_cone(0.1, 0.3, 20,1)
@@ -506,6 +507,25 @@ def collision_check(m_input,location, normal):
         # Visualize to confirm
     # o3d.visualization.draw_geometries([m_input, m_test])
 
+
+# Returns true if in collision
+def collision_check_with_robot_model(m_input, location, orientation):
+    # SET HERE THE SIZE OF THE ROBOT. The m_test is a box representing the robot.
+    m_test = o3d.geometry.TriangleMesh.create_box(0.8, 0.8, 0.5)
+    rot = o3d.geometry.TriangleMesh.get_rotation_matrix_from_quaternion(np.array([orientation[1], orientation[2], orientation[3], orientation[0]]))
+    tx = np.zeros((4,4))
+    tx[:3,:3] = rot
+    tx[3,3] = 1
+    # Rotate the mesh
+    m_test = m_test.transform(tx)
+    # Translate the test mesh to the test location
+    m_test = m_test.translate(location)
+    # Actual collision check
+    if (m_test.is_intersecting(m_input)):
+        # print("Intersecting")
+        return True
+    else:
+        return False
 
 def  pose_from_vector3D(waypoint):
     #http://lolengine.net/blog/2013/09/18/beautiful-maths-quaternion-from-vectors
@@ -680,10 +700,95 @@ def getClusters(viewpoints):
 
 #     return np.array(offsetVP)
 
+def posearray_to_nparrays(posearr):
+  positions = []
+  orientations = []
+  for pose in posearr.poses:
+    positions.append([pose.position.x, pose.position.y, pose.position.z])
+    orientations.append([pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z])
+  return np.array(positions), np.array(orientations)
+
+def seperate_points_to_clusters(points, clusters, orientations):
+  #This array contains arrays of points that are in a cluster. 
+  # clustered_points = [cluster1, cluster2, ..]
+  # cluster1 = [point1, point2, ...]
+  clustered_points = []
+  clustered_orientations = []
+  # The clustered orientations is simply so that we can maintain the orientiations in a similar data structure as the positions. 
+  num_clusters = np.amax(clusters)
+  for i in range(num_clusters):
+    clustered_points.append([])
+    clustered_orientations.append([])
+  
+  for i in range(len(points)):
+    clustered_points[clusters[i]-1].append(points[i])
+    clustered_orientations[clusters[i]-1].append(orientations[i])
+    # The -1 is required as the clusters numbering starts from 1
+  
+  return clustered_points, clustered_orientations
+
+#Note: Clusterization does not consider the viewpoint angles
+def clusterize_viewpoints(posearr):
+  locations, orientations = posearray_to_nparrays(posearr)
+  distance_threshold = 1.5
+  clusters = hcluster.fclusterdata(locations, distance_threshold, criterion="distance")
+  return seperate_points_to_clusters(locations, clusters, orientations)
+
+def check_ik(base_location, base_orientation, viewpoint_location, viewpoint_orientation):
+  return True
+
+# cluster is a np array of points
+def get_base_location_for_cluster(position_cluster, orientation_cluster):
+  cluster_center = np.mean(position_cluster, axis=0)
+  # project center to ground
+  cluster_center[2] = 0
+  projected_circle_radius = 1
+  base_offset_from_ground = 0.2
+  mesh = o3d.io.read_triangle_mesh(TANK)
+
+  for i in range(100):
+    # Sample point for base location in a circle around the projected cluster_center
+    length = np.sqrt(np.random.uniform(0, projected_circle_radius))
+    angle = np.pi * np.random.uniform(0, 2)
+    x = cluster_center[0] + length * np.cos(angle)
+    y = cluster_center[1] + length * np.sin(angle)
+    base_location = np.array([x, y, base_offset_from_ground])
+    base_orientation = np.mean(np.array(orientation_cluster), axis=0)
+    # wxyz
+
+    #Check if base location is possible - i.e. check if it is collision free and it is ik feasible for all points in the position_cluster
+    if not collision_check_with_robot_model(mesh, base_location, base_orientation):
+      # The location is not in collision with the object mesh and now the ik should be checked for all points in the position_cluster
+      all_ik_feasible = False
+      for j in range(len(position_cluster)):
+        if not check_ik(base_location, base_orientation, position_cluster[j], orientation_cluster[j]):
+          break
+        if j == (len(position_cluster) - 1):
+          all_ik_feasible = True
+      if all_ik_feasible:
+        return base_location, base_orientation
+    else: 
+      print("in collision")
+  print('Fatal: Unable to find a possible base location after 100 tries. Maybe try increasing the projected_circle_radius? Voxblox could also be reporting the collision with the ground. This can be fixed by increasing the base_offset')
+  
+
+def np_to_pose(position, orientation):
+  p = Pose()
+  print(position)
+  p.position.x = position[0]
+  p.position.y = position[1]
+  p.position.z = position[2]
+  p.orientation.w = orientation[0]
+  p.orientation.x = orientation[1]
+  p.orientation.y = orientation[2]
+  p.orientation.z = orientation[3]
+  return p
+
 def main():
     rospy.init_node('viewpointg_gen', anonymous=True)
+    viewpoint_pub = rospy.Publisher('viewpoints',PoseArray,queue_size=5, latch=True)
+    base_poses_pub = rospy.Publisher('base_poses',PoseArray,queue_size=5, latch=True)
 
-    p = rospy.Publisher('viewpoints',PoseArray,queue_size=5, latch=True)
     viewpoints = dual_viewpoint_sampling(TANK, ROBOT_RADIUS, ARM_LENGTH, plot=False)
     filtered_vp = getValidVP(viewpoints)
     # print("viewpoint shape = ", filtered_vp.shape)
@@ -691,12 +796,43 @@ def main():
     rate = rospy.Rate(5)
     posearr = getPoseArray(filtered_vp)
     print("old vp = {} filteredvp = {}".format(viewpoints.shape,filtered_vp.shape))
+
+    # Now we have the final viewpoints for the camera. They need to be clustered, the base location needs to be found for each cluster and then two pose arrays need to be published in a new message
+    clustered_positions, clustered_orientations = clusterize_viewpoints(posearr)
+    print("sizes: ")
+    print(len(clustered_positions))
+    print(len(clustered_orientations))
+    clustered_base_positions = []
+    clustered_base_orientations = []
+    for i in range(len(clustered_positions)):
+      clustered_base_position, clustered_base_orientation = get_base_location_for_cluster(clustered_positions[i], clustered_orientations[i])
+      clustered_base_positions.append(clustered_base_position)
+      clustered_base_orientations.append(clustered_base_orientation)
+
+
+    print("Clustered positions: ")
+    print(clustered_positions)
+
+    print("Clustered base positions: ")
+    print(clustered_base_positions)
+
+    # convert all clusters back to two pose arrays
+    ee_posearr = PoseArray()
+    b_posearr = PoseArray()
+    for i in range(len(clustered_positions)):
+      base_pose = np_to_pose(clustered_base_positions[i], clustered_base_orientations[i])
+      for j in range(len(clustered_positions[i])):
+        print (i, j)
+        viewpoint_pose = np_to_pose(clustered_positions[i][j], clustered_orientations[i][j])
+        ee_posearr.poses.append(viewpoint_pose)
+        b_posearr.poses.append(base_pose)
+
     # offset_filtered_vp = getOffsetVP(filtered_vp)
     # ac = getClusters(offset_filtered_vp)
     while(not rospy.is_shutdown()):
-        p.publish(posearr)
+        viewpoint_pub.publish(ee_posearr)
+        base_poses_pub.publish(b_posearr)
         rate.sleep()
-
 
     # stuff = load_mesh(TANK)
     # mesh_model = stuff[0]

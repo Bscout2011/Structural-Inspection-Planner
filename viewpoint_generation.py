@@ -106,11 +106,37 @@ def sample_cone_region(mu=500, incidence_angle=INCIDENCE_ANGLE, dmin=DMIN, dmax=
         # Create plot window with robot config sample space
         fig, ax = plt.subplots()
         ax.plot(cone_points[:,0], cone_points[:,2], 'bo')
-        ax.set_ylim([0, dmax*1.05])
         ax.axis('equal')
+        ax.set_ylim([-1, dmax*1.05])
         ax.axis('off')
+        
+        ax.plot(  # Plot boundary Points
+            [-1, 0, 1], 
+            [-.5, 0, -.5], 
+            'ko-')
+        ax.plot(  # p_i-1 normal
+            [-1, -1.25],
+            [-.5, 0],
+            'k--'
+        )
+        ax.plot(  # p_i+1 normal
+            [1, 1.25],
+            [-.5, 0],
+            'k--'
+        )
+        ax.annotate(r"$p_i$", [-.1, -.3], size=20)
+        ax.annotate(r"$p_{i+1}$", [1, -.75], size=20)
+        ax.annotate(r"$\hat u_{i+1}$", [1.25, 0.1], size=20)
+        ax.annotate(r"$p_{i-1}$", [-1, -.75], size=20)
+        ax.annotate(r"$\hat u_{i-1}$", [-1.35, 0.1], size=20)
+
         # Plot centerline
-        ax.plot([0, 0], [dmin, .6], 'k-')
+        ax.plot([0, 0], [0, .6], 'k--')
+        ax.plot(
+            [0, .55 * np.sin(incidence_angle)],
+            [0, .55 * np.cos(incidence_angle)],
+            'k-'
+        )
         # Plot the angle constraint edges
         corners = np.array(
             [[dmin * np.sin(incidence_angle), dmin*np.cos(incidence_angle)],
@@ -129,8 +155,10 @@ def sample_cone_region(mu=500, incidence_angle=INCIDENCE_ANGLE, dmin=DMIN, dmax=
         # Annotate plot
         ax.annotate(r"$\tau$", [.3, .3], size=25)
         draw_angle(incidence_angle, np.pi / 2 - incidence_angle)
-        ax.annotate("dmin", [corners[0,0]+.1, corners[0, 1]], size=25)
-        ax.annotate("dmax", [corners[1,0]-.1, corners[1, 1]+.1], size=25)
+        ax.annotate("dmin", [-1*corners[0,0]-.8, corners[0, 1]], size=25)
+        ax.annotate("dmax", [-1*corners[1,0]-.4, corners[1, 1]+.2], size=25)
+        ax.annotate(r"$S_i$", [1, 1], size=25)
+        ax.arrow(1, 1, -.75, .1, width=.01, joinstyle='round', zorder=3)
 
         plt.show()
 
@@ -266,6 +294,10 @@ def compute_visible_points(region, point, points, normals, viewed_points, arm_le
         nearest_neighbors = free_space_kdtree.query_ball_point(viewpoint, arm_length)
         if len(nearest_neighbors) == 0:
             continue  # viewpoint is out of reach
+        else:
+            # viewpoint within arm length. Check IK solution is feasible.
+            # Get IK solution for closest free
+            pass
 
         viewpoint_dir = point - viewpoint
         viewpoint_dir = viewpoint_dir / norm(viewpoint_dir)
@@ -907,7 +939,7 @@ def main():
     # mesh_model = stuff[0]
     # plot_sideview(mesh_model)
     # plot_model_normals(TANK)
-    # sample_cone_region(plot=True)
+    # sample_cone_region(dmin=.7, plot=True)
 
 
 if __name__ == "__main__":

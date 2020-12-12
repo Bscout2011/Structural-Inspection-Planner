@@ -12,6 +12,7 @@ Accessed: 20 Oct 2020
 import random
 import pickle
 import math
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
@@ -24,6 +25,7 @@ from Viewpoints import TANK, create_obstacles, load_mesh, create_viewpoints, vie
 N_SAMPLE = 500  # number of sample_points
 N_KNN = 10  # number of edge from one sampled point
 MAX_EDGE_LEN = 5.0  # [m] Maximum edge length
+CWD = os.path.dirname(os.path.abspath(__file__))
 
 show_animation = True
 
@@ -331,7 +333,7 @@ def connect_goals(start_idx, goals, road_map, sample_kd_tree):
 def pair_wise_distances(points, road_map, sample_x, sample_y):
     """
     points: a list of indexes correspoinding to samples
-    road_map: graph of all connected samples
+    road_map: adjacency list of all connected samples
     sample_xy: xy point coordinates
     """
     n_p = len(points)
@@ -459,7 +461,7 @@ def plot_goal_road_map(road_map, goals, sample_kd_tree):
                 "-g")
 
 
-def sample_points(rr, obstacle_kd_tree, boundary=3):
+def sample_points(rr, obstacle_kd_tree, boundary=3, n_sample=N_SAMPLE):
     """
     Randomly sample points in the free configuration space.
     Returns sample_x, sample_y
@@ -473,7 +475,7 @@ def sample_points(rr, obstacle_kd_tree, boundary=3):
 
     sample_x, sample_y = [], []
 
-    while len(sample_x) < N_SAMPLE:
+    while len(sample_x) < n_sample:
         tx = (random.random() * (max_x - min_x)) + min_x
         ty = (random.random() * (max_y - min_y)) + min_y
 
@@ -491,27 +493,37 @@ def sample_points(rr, obstacle_kd_tree, boundary=3):
     return sample_x, sample_y
 
 
-def plot_freespace(rr):
+def plot_freespace(rr, arm_length, boundary, n_samples):
+    """
+    param
+        rr: robot radius
+    """
+    viewpoints = np.load(CWD + "/viewpoints.npy")
     mesh_model, facets, incidence_normals, mesh_centers, n = load_mesh(TANK)
     obstacles = create_obstacles(facets)
     obstacle_kd_tree = cKDTree(obstacles)
     # Sample points contains N_SAMPLE + n_g points
     print("PRM sample points")
-    sample_x, sample_y = sample_points(rr, obstacle_kd_tree)
+    sample_x, sample_y = sample_points(rr, obstacle_kd_tree, boundary, n_samples)
     
     # Add goals as an array. 
     print("Building road map")
     road_map, sample_kd_tree = generate_road_map(sample_x, sample_y, rr, obstacle_kd_tree)
 
-    plt.scatter(sample_kd_tree.data[:,0], sample_kd_tree.data[:,1], c='b')
-    plt.scatter(obstacle_kd_tree.data[:,0], obstacle_kd_tree.data[:,1], c='k')
+    plt.scatter(sample_kd_tree.data[:,0], sample_kd_tree.data[:,1], c='b', alpha=.2)
+    plt.scatter(obstacle_kd_tree.data[:,0], obstacle_kd_tree.data[:,1], c='k', alpha=.2)
+    plt.scatter(viewpoints[:,0], viewpoints[:,1], c='r')
+    # Draw a Circle with arm_length radius around each viewpoint
+    for g in viewpoints:
+        circle = plt.Circle((g[0], g[1]), radius=arm_length, color='orange', fill=False, linestyle="dashed")
+        plt.gcf().gca().add_artist(circle)
+
+    plt.axis('equal')
     plt.show()
 
 
 def main():
     print(__file__ + " start!!")
-
-    my_dir = "/home/alw/School/CS791/src/siplanner/"
     
     print("Loading Model")
     mesh_model, facets, incidence_normals, mesh_centers, n = load_mesh(TANK)
@@ -529,4 +541,4 @@ def main():
 
 
 if __name__ == '__main__':
-    plot_freespace(.7)
+    plot_freespace(.5, 1, 1, 1000)

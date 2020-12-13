@@ -12,17 +12,18 @@ from stl import mesh as stl_mesh
 from numpy.linalg import norm
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial import cKDTree
+from scipy.spatial import distance
+import scipy.cluster.hierarchy as hcluster
+from scipy.cluster.hierarchy import linkage, fcluster
 
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import axes3d
 from mpl_toolkits import mplot3d
-import scipy.cluster.hierarchy as hcluster
 
 from os.path import exists, join
 import os
 from geometry_msgs.msg import Pose, PoseArray
-from scipy.spatial.transform import Rotation as R
-from probabilistic_road_map import sample_points, generate_road_map
+from probabilistic_road_map import sample_points, generate_road_map, dijkstra_planning
 
 import rospy
 
@@ -381,6 +382,84 @@ def generate_prm(polygon, robot_radius, height, n_sample=500):
     return sample_kdtree, road_map
 
 
+def cluster_base_position(ell, viewpoints, sample_kd_tree, road_map):
+    """
+    Find a minimal set of base positions for the viewpoint set.
+    Find pairwise distances between all viewpoints. If a viewpoint pair shares
+    a nearest neighbor within ell distance in the sample space, 
+    then distance between these viewpoint is the distance between that nearest neighbor and
+    the viewpoint. Else viewpoints don't share a nearest neighbor, distance between the two 
+    is length to closest point in sample space and the dijkstra path length between the free space points.
+    Pairwise distances feed into a heirarchial clustering algorithm using a complete linkage.
+    The dendrogram is pruned at 2*ell. For each viewpoint cluster, find a common nearest neighbor
+    that is optimal. We choose the neighbor that minimizes the distance to all viewpoints.
+    Store the viewpoints in a list structure `G` that corresponds to each base position. 
+
+    Params:
+        ell: [m] robot arm length
+        viewpoints: (n_vp, 6) viewpoint poses
+        sample_kd_tree: cKDTree of points representing free space
+        road_map: adjacency list of sample space
+
+    Returns:
+        B: (n_b, 6) an array of base poses
+        G: list of lists of viewpoint poses. First index corresponds to base pose index. Second contains corresponding viewpoints
+    """
+    # Find pair wise distances between each viewpoint
+    n_vp = viewpoints.shape[0]
+    p_dist = np.zeros((n_vp, n_vp))
+    for i in range(n_vp):
+        for j in range(i+1, n_vp):
+            # First: find common nearest neighbors
+            vp0 = viewpoints[i, 0:3]
+            vp1 = viewpoints[j, 0:3]
+            nn0 = sample_kd_tree.query_ball_point(vp0, ell)
+            nn1 = sample_kd_tree.query_ball_point(vp1, ell)
+            common_nn = set(nn0).intersection(set(nn1))
+            if len(common_nn) > 0:  # viewpoint pair has a common base position
+                commom_nn_pos = np.array([sample_kd_tree.data[nn] for nn in common_nn])
+                distances = distance.cdist((vp0, vp1), commom_nn_pos)
+                p_dist[i, j] = distances.sum(axis=0).min()  # store minimum common distance
+            else:  # no common base position. Compute path length between closest base positions
+                b0 = nn0[0]
+                b1 = nn1[0]
+                path_list, path_found = dijkstra_planning(b0, b1, road_map, sample_kd_tree.data[:,0], sample_kd_tree.data[:,1])
+                if not path_found:
+                    raise Exception("No path found between viewpoints")
+                path_length = distance.euclidean(vp0, sample_kd_tree.data[b0])
+                for s in range(len(path_list) - 1):
+                    path_length = path_length + distance.euclidean(
+                        sample_kd_tree.data[path_list[s]], sample_kd_tree.data[path_list[s+1]])
+                path_length = path_length + distance.euclidean(vp1, sample_kd_tree.data[b1])
+                p_dist[i, j] = path_length
+
+    # Hierarchial clustering
+    v_dist = distance.squareform(p_dist + p_dist.T)
+    Z = linkage(v_dist, 'complete')
+    cluster_assignment = fcluster(Z, 2*ell, 'distance')
+    # Find a common base position for each cluster group
+    n_c = max(cluster_assignment)
+    B = np.zeros((n_c, 6))
+    G = []
+    for i in range(n_c):
+        vpos = np.array([viewpoints[j, 0:3] for j, c in enumerate(cluster_assignment) if c == i+1])
+        G.append(vpos)
+        bp = [set(sample_kd_tree.query_ball_point(p, ell)) for p in vpos]
+        common_bp = set.intersection(*bp)
+        base_pos_candidates  = np.array([sample_kd_tree.data[p] for p in common_bp])
+        # vpos_bp_dist: each row corresponds to a viewpoint and column to a base position; 
+        # entry is euclidean distance between the two
+        vpos_bp_dist = distance.cdist(vpos, base_pos_candidates)
+        # Choose base position with min total distance. What would be other metrics?
+        opt_bp_idx = vpos_bp_dist.sum(axis=0).argmin()
+        opt_bp_pos = base_pos_candidates[opt_bp_idx]
+        opt_bp_pos[2] = 0  # set position height to ground level
+        # TODO: Determine base orientation
+        B[i, 0:2] = opt_bp_pos[0:2]
+    
+    return B, G
+
+
 def dual_viewpoint_sampling(polygon, robot_radius, arm_length, height, mu=500, constraints=None, plot=False):
     """
     Arguments:
@@ -392,6 +471,8 @@ def dual_viewpoint_sampling(polygon, robot_radius, arm_length, height, mu=500, c
 
     Output: 
         viewpoint_set: a near optimal set S of viewpoints covering the object's boundary
+        free_space_kdtree: cKDTree of samples representing the free space
+        road_map: adjacency list of the free space
 
     1. Select a point p from the unseen portion of the object and compute the region O(p) from which such a point is visible.
     2. Sample O(p) mu times, and select the position with the highest coverage. Add this position to the set S.
@@ -443,7 +524,7 @@ def dual_viewpoint_sampling(polygon, robot_radius, arm_length, height, mu=500, c
     
     if plot:
         plot_3d_object_viewpoints(mesh_model, viewpoint_set, viewed_points_set)
-    return viewpoint_set
+    return viewpoint_set, free_space_kdtree, road_map
 
 
 def plot_3d_object_viewpoints(mesh_model, viewpoints, viewed_points_set):
@@ -653,7 +734,6 @@ def height_filter(g):
         return True
 
 
-
 def getValidVP(viewpoints):
 
     filter_vp = []
@@ -772,6 +852,7 @@ def posearray_to_nparrays(posearr):
     orientations.append([pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z])
   return np.array(positions), np.array(orientations)
 
+
 def seperate_points_to_clusters(points, clusters, orientations):
   #This array contains arrays of points that are in a cluster. 
   # clustered_points = [cluster1, cluster2, ..]
@@ -791,6 +872,7 @@ def seperate_points_to_clusters(points, clusters, orientations):
   
   return clustered_points, clustered_orientations
 
+
 #Note: Clusterization does not consider the viewpoint angles
 def clusterize_viewpoints(posearr):
   locations, orientations = posearray_to_nparrays(posearr)
@@ -798,8 +880,10 @@ def clusterize_viewpoints(posearr):
   clusters = hcluster.fclusterdata(locations, distance_threshold, criterion="distance")
   return seperate_points_to_clusters(locations, clusters, orientations)
 
+
 def check_ik(base_location, base_orientation, viewpoint_location, viewpoint_orientation):
   return True
+
 
 # cluster is a np array of points
 def get_base_location_for_cluster(position_cluster, orientation_cluster):
@@ -848,12 +932,13 @@ def np_to_pose(position, orientation):
   p.orientation.z = orientation[3]
   return p
 
+
 def main():
     rospy.init_node('viewpointg_gen', anonymous=True)
     viewpoint_pub = rospy.Publisher('viewpoints',PoseArray,queue_size=5, latch=True)
     base_poses_pub = rospy.Publisher('base_poses',PoseArray,queue_size=5, latch=True)
 
-    viewpoints = dual_viewpoint_sampling(TANK, ROBOT_RADIUS, ARM_LENGTH, plot=False)
+    viewpoints, sample_kdtree, road_map = dual_viewpoint_sampling(TANK, ROBOT_RADIUS, ARM_LENGTH, HEIGHT, plot=False)
     filtered_vp = getValidVP(viewpoints)
     # print("viewpoint shape = ", filtered_vp.shape)
 
@@ -905,5 +990,10 @@ def main():
     # sample_cone_region(dmin=.7, plot=True)
 
 
+def viewpoint_base_generate():
+    viewpoints, sample_kdtree, road_map = dual_viewpoint_sampling(TANK, ROBOT_RADIUS, ARM_LENGTH, HEIGHT, plot=False)
+    B, G = cluster_base_position(ARM_LENGTH, viewpoints, sample_kdtree, road_map)
+
+
 if __name__ == "__main__":
-    main()
+    viewpoint_base_generate()

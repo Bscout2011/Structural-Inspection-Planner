@@ -22,9 +22,18 @@ from mpl_toolkits import mplot3d
 
 from os.path import exists, join
 import os
+import sys
 from geometry_msgs.msg import Pose, PoseArray
 from probabilistic_road_map import sample_points, generate_road_map, dijkstra_planning
 
+from scipy.spatial.transform import Rotation as R
+import rospkg
+r = rospkg.RosPack()
+path  = r.get_path('robowork_planning')
+path += "/scripts/"
+print(path)
+sys.path.append(path)
+from get_ik import GetIK
 import rospy
 
 # Set input viewpoint constraints
@@ -363,7 +372,7 @@ def create_obstacles(facets):
     return obstacles
 
 
-def generate_prm(polygon, robot_radius, height, n_sample=500):
+def generate_prm(polygon, robot_radius, height=0, n_sample=500):
     """
     Given a stl mesh, generate a road map around the object representing the mobile robot's free space. 
     Arguments:
@@ -513,7 +522,7 @@ def dual_viewpoint_sampling(polygon, robot_radius, arm_length, height, mu=500, c
             viewpoint, unseen, viewed_points = compute_visible_points(region, point, points, unit_norms, unseen, arm_length, free_space_kdtree)
             viewpoint_set.append(viewpoint)
             viewed_points_set.append(viewed_points)
-            print(f"{np.sum(unseen == 0)} / {unseen.shape[0]} mesh points unseen")
+            print("{np.sum(unseen == 0)} / {unseen.shape[0]} mesh points unseen")
 
         except Exception:
             unseen[point_idx] = 2
@@ -882,7 +891,37 @@ def clusterize_viewpoints(posearr):
 
 
 def check_ik(base_location, base_orientation, viewpoint_location, viewpoint_orientation):
-  return True
+  # print("base_orientation type = {}, shape = {}", type(base_orientation),base_orientation.shape)
+  PLANNING_GROUP_ = "main_arm_SIM"
+  ik_ob = GetIK(group=PLANNING_GROUP_)
+
+  arm_pose = PoseStamped()
+  arm_pose.header.frame_id = 'map'
+  arm_pose.pose.position.x = viewpoint_location[0]
+  arm_pose.pose.position.y = viewpoint_location[1]
+  arm_pose.pose.position.z = viewpoint_location[2]
+  arm_pose.pose.orientation.x = viewpoint_orientation[0]
+  arm_pose.pose.orientation.y = viewpoint_orientation[1]
+  arm_pose.pose.orientation.z = viewpoint_orientation[2]
+  arm_pose.pose.orientation.w = viewpoint_orientation[3]
+  
+  base_pose = PoseStamped()
+  base_pose.header.frame_id = 'map'
+  base_pose.pose.position.x = base_location[0]
+  base_pose.pose.position.y = base_location[1]
+  base_pose.pose.position.z = base_location[2]
+  base_pose.pose.orientation.x = base_orientation[0]
+  base_pose.pose.orientation.y = base_orientation[1]
+  base_pose.pose.orientation.z = base_orientation[2]
+  base_pose.pose.orientation.w = base_orientation[3]
+  response = ik_ob.get_ik(arm_pose, base_pose)
+  print("ik response code", response.error_code)
+  if(response.error_code.val == MoveItErrorCodes.SUCCESS):
+      # print("ik found\n")
+    return True
+  else:
+    # print("No solution found ")
+    return False
 
 
 # cluster is a np array of points

@@ -33,7 +33,7 @@ path  = r.get_path('robowork_planning')
 path += "/scripts/"
 print(path)
 sys.path.append(path)
-from get_ik import GetIK
+# from get_ik import GetIK
 import rospy
 
 # Set input viewpoint constraints
@@ -391,10 +391,44 @@ def generate_prm(polygon, robot_radius, height=0, n_sample=500):
     return sample_kdtree, road_map
 
 
-def cluster_base_position(ell, viewpoints, sample_kd_tree, road_map):
+def check_inline(p, s, u, incidence_angle, dmin=0, dmax=None):
+    """
+    Checks if a point s lies within a cone incidence constraint.
+    I think this works in any dimension so long as p, s, and u are the same dimension.
+
+    Params:
+        p: point defining cone base
+        s: point to check if within incidence cone
+        u: unit direction of cone from p
+        incidence_angle: width of cone 
+    """ 
+    vec = s - p
+    length = norm(vec)
+    unit_vec = vec / length
+    theta = np.arccos(np.dot(vec, u))
+    to_ret = length > dmin
+    if dmax is not None:
+        to_ret = to_ret and (length < dmax)
+    to_ret = to_ret and (theta <= incidence_angle)
+    return to_ret
+
+
+def cluster_base_position(ell, viewpoints, sample_kd_tree, road_map, arm_angle=np.pi/3):
     """
     Find a minimal set of base positions for the viewpoint set.
-    Find pairwise distances between all viewpoints. If a viewpoint pair shares
+    
+    Params:
+        ell: [m] robot arm length
+        arm_angle: [rad] base position angle to viewpoint direction constraint. Default 60deg.
+        viewpoints: (n_vp, 6) viewpoint poses
+        sample_kd_tree: cKDTree of points representing free space
+        road_map: adjacency list of sample space
+
+    Returns:
+        B: (n_b, 6) an array of base poses
+        G: list of lists of viewpoint poses. First index corresponds to base pose index. Second contains corresponding viewpoints
+
+    First, calculate pairwise distances between all viewpoints. If a viewpoint pair shares
     a nearest neighbor within ell distance in the sample space, 
     then distance between these viewpoint is the distance between that nearest neighbor and
     the viewpoint. Else viewpoints don't share a nearest neighbor, distance between the two 
@@ -403,16 +437,6 @@ def cluster_base_position(ell, viewpoints, sample_kd_tree, road_map):
     The dendrogram is pruned at 2*ell. For each viewpoint cluster, find a common nearest neighbor
     that is optimal. We choose the neighbor that minimizes the distance to all viewpoints.
     Store the viewpoints in a list structure `G` that corresponds to each base position. 
-
-    Params:
-        ell: [m] robot arm length
-        viewpoints: (n_vp, 6) viewpoint poses
-        sample_kd_tree: cKDTree of points representing free space
-        road_map: adjacency list of sample space
-
-    Returns:
-        B: (n_b, 6) an array of base poses
-        G: list of lists of viewpoint poses. First index corresponds to base pose index. Second contains corresponding viewpoints
     """
     # Find pair wise distances between each viewpoint
     n_vp = viewpoints.shape[0]
@@ -421,10 +445,16 @@ def cluster_base_position(ell, viewpoints, sample_kd_tree, road_map):
         for j in range(i+1, n_vp):
             # First: find common nearest neighbors
             vp0 = viewpoints[i, 0:3]
+            vu0 = viewpoints[i, 4:6]
             vp1 = viewpoints[j, 0:3]
+            vu1 = viewpoints[i, 4:6]
             nn0 = sample_kd_tree.query_ball_point(vp0, ell)
             nn1 = sample_kd_tree.query_ball_point(vp1, ell)
-            common_nn = set(nn0).intersection(set(nn1))
+            common_nn = set(nn0).intersection(set(nn1))  # contains indices of sample_kd_tree data
+            common_nn = [x for x in common_nn if \
+                    (check_inline(vp0[:2], sample_kd_tree.data[x][:2], -vu0, arm_angle, 0.1)) and \
+                    (check_inline(vp1[:2], sample_kd_tree.data[x][:2], -vu1, arm_angle, 0.1))
+                ]
             if len(common_nn) > 0:  # viewpoint pair has a common base position
                 commom_nn_pos = np.array([sample_kd_tree.data[nn] for nn in common_nn])
                 distances = distance.cdist((vp0, vp1), commom_nn_pos)
@@ -451,15 +481,30 @@ def cluster_base_position(ell, viewpoints, sample_kd_tree, road_map):
     B = np.zeros((n_c, 6))
     G = []
     for i in range(n_c):
-        vpos = np.array([viewpoints[j, 0:3] for j, c in enumerate(cluster_assignment) if c == i+1])
-        G.append(vpos)
-        bp = [set(sample_kd_tree.query_ball_point(p, ell)) for p in vpos]
+        vpose = np.array([viewpoints[j] for j, c in enumerate(cluster_assignment) if c == i+1])
+        vpos = vpose[:, 0:3]
+        vorientation = vpose[:, 3:6]
+        G.append(vpose)
+        bp = [set(sample_kd_tree.query_ball_point(p, ell)) for p in vpos]  # query basepositions within an arm length
         common_bp = set.intersection(*bp)
-        base_pos_candidates  = np.array([sample_kd_tree.data[p] for p in common_bp])
+        # Filter base positions behind the viewpoints
+        base_pos_candidates = []
+        for idx in common_bp:
+            base_position = sample_kd_tree.data[idx]
+            feasible = True
+            # TODO: Uncomment
+            # for vp in vpose:
+            #     feasible = feasible and check_inline(vp[0:2], base_position[:2], -vp[4:6], arm_angle, 0.1)
+            if feasible:
+                base_pos_candidates.append(base_position)
+        if len(base_pos_candidates) == 0:
+            raise Exception("No base positions found for a cluster.")
+        base_pos_candidates  = np.array(base_pos_candidates)
         # vpos_bp_dist: each row corresponds to a viewpoint and column to a base position; 
         # entry is euclidean distance between the two
-        vpos_bp_dist = distance.cdist(vpos, base_pos_candidates)
-        # Choose base position with min total distance. What would be other metrics?
+        vpos_bp_dist = distance.cdist(vpose[:, 0:3], base_pos_candidates)
+        # Choose base position with min total distance. 
+        # TODO: What would be other metrics?
         opt_bp_idx = vpos_bp_dist.sum(axis=0).argmin()
         opt_bp_pos = base_pos_candidates[opt_bp_idx]
         opt_bp_pos[2] = 0  # set position height to ground level
@@ -488,7 +533,6 @@ def dual_viewpoint_sampling(polygon, robot_radius, arm_length, height, mu=500, c
     3. Update the data structure representing the unseen portion of the object.
     4. Repeat the algorithm until the unssen boundary is neglectable.
     """
-
     # load the polygon object
     rng = np.random.default_rng()
     mesh_model, facets, unit_norms, mesh_centers, n = load_mesh(polygon)
@@ -1032,6 +1076,7 @@ def main():
 def viewpoint_base_generate():
     viewpoints, sample_kdtree, road_map = dual_viewpoint_sampling(TANK, ROBOT_RADIUS, ARM_LENGTH, HEIGHT, plot=False)
     B, G = cluster_base_position(ARM_LENGTH, viewpoints, sample_kdtree, road_map)
+    return B, G
 
 
 if __name__ == "__main__":

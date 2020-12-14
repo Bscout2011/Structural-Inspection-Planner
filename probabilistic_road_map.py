@@ -14,6 +14,7 @@ import pickle
 import math
 import os
 import numpy as np
+from numpy.linalg import norm
 import matplotlib.pyplot as plt
 import matplotlib
 from scipy.spatial import cKDTree, distance
@@ -494,24 +495,53 @@ def sample_points(rr, obstacle_kd_tree, boundary=3, n_sample=N_SAMPLE):
     return sample_x, sample_y
 
 
-def plot_freespace(rr, ell, boundary, n_samples):
+def check_inline(p, s, u, incidence_angle, dmin=0, dmax=None):
     """
-    param
-        rr: robot radius for calculating obstacle free space
-        ell: arm length reachable viewpoints
-        boundary: perimeter of free space around obstacle
-        n_samples: number of points in PRM
+    Checks if a point s lies within a cone incidence constraint.
+    I think this works in any dimension so long as p, s, and u are the same dimension.
+
+    Params:
+        p: point defining cone base
+        s: point to check if within incidence cone
+        u: unit direction of cone from p
+        incidence_angle: width of cone 
+    """ 
+    vec = s - p
+    length = norm(vec)
+    unit_vec = vec / length
+    theta = np.arccos(np.dot(vec, u))
+    to_ret = length > dmin
+    if dmax is not None:
+        to_ret = to_ret and (length < dmax)
+    to_ret = to_ret and (theta <= incidence_angle)
+    return to_ret
+
+
+def cluster_base_position(ell, viewpoints, sample_kd_tree, road_map, arm_angle=np.pi/3):
     """
-    viewpoints = np.load(CWD + "/viewpoints.npy")
-    mesh_model, facets, incidence_normals, mesh_centers, n = load_mesh(TANK)
-    obstacles = create_obstacles(facets)
-    obstacle_kd_tree = cKDTree(obstacles)
-    print("PRM sample points")
-    sample_x, sample_y = sample_points(rr, obstacle_kd_tree, boundary, n_samples)
+    Find a minimal set of base positions for the viewpoint set.
     
-    print("Building road map")
-    road_map, sample_kd_tree = generate_road_map(sample_x, sample_y, rr, obstacle_kd_tree, height=.5)
-    # Find a minimal set of base positions for the viewpoint set
+    Params:
+        ell: [m] robot arm length
+        arm_angle: [rad] base position angle to viewpoint direction constraint. Default 60deg.
+        viewpoints: (n_vp, 6) viewpoint poses
+        sample_kd_tree: cKDTree of points representing free space
+        road_map: adjacency list of sample space
+
+    Returns:
+        B: (n_b, 6) an array of base poses
+        G: list of lists of viewpoint poses. First index corresponds to base pose index. Second contains corresponding viewpoints
+
+    First, calculate pairwise distances between all viewpoints. If a viewpoint pair shares
+    a nearest neighbor within ell distance in the sample space, 
+    then distance between these viewpoint is the distance between that nearest neighbor and
+    the viewpoint. Else viewpoints don't share a nearest neighbor, distance between the two 
+    is length to closest point in sample space and the dijkstra path length between the free space points.
+    Pairwise distances feed into a heirarchial clustering algorithm using a complete linkage.
+    The dendrogram is pruned at 2*ell. For each viewpoint cluster, find a common nearest neighbor
+    that is optimal. We choose the neighbor that minimizes the distance to all viewpoints.
+    Store the viewpoints in a list structure `G` that corresponds to each base position. 
+    """
     # Find pair wise distances between each viewpoint
     n_vp = viewpoints.shape[0]
     p_dist = np.zeros((n_vp, n_vp))
@@ -519,10 +549,16 @@ def plot_freespace(rr, ell, boundary, n_samples):
         for j in range(i+1, n_vp):
             # First: find common nearest neighbors
             vp0 = viewpoints[i, 0:3]
+            vu0 = viewpoints[i, 4:6]
             vp1 = viewpoints[j, 0:3]
+            vu1 = viewpoints[i, 4:6]
             nn0 = sample_kd_tree.query_ball_point(vp0, ell)
             nn1 = sample_kd_tree.query_ball_point(vp1, ell)
-            common_nn = set(nn0).intersection(set(nn1))
+            common_nn = set(nn0).intersection(set(nn1))  # contains indices of sample_kd_tree data
+            common_nn = [x for x in common_nn if \
+                    (check_inline(vp0[:2], sample_kd_tree.data[x][:2], -vu0, arm_angle, 0.1)) and \
+                    (check_inline(vp1[:2], sample_kd_tree.data[x][:2], -vu1, arm_angle, 0.1))
+                ]
             if len(common_nn) > 0:  # viewpoint pair has a common base position
                 commom_nn_pos = np.array([sample_kd_tree.data[nn] for nn in common_nn])
                 distances = distance.cdist((vp0, vp1), commom_nn_pos)
@@ -530,7 +566,7 @@ def plot_freespace(rr, ell, boundary, n_samples):
             else:  # no common base position. Compute path length between closest base positions
                 b0 = nn0[0]
                 b1 = nn1[0]
-                path_list, path_found = dijkstra_planning(b0, b1, road_map, sample_x, sample_y)
+                path_list, path_found = dijkstra_planning(b0, b1, road_map, sample_kd_tree.data[:,0], sample_kd_tree.data[:,1])
                 if not path_found:
                     raise Exception("No path found between viewpoints")
                 path_length = distance.euclidean(vp0, sample_kd_tree.data[b0])
@@ -549,30 +585,67 @@ def plot_freespace(rr, ell, boundary, n_samples):
     B = np.zeros((n_c, 6))
     G = []
     for i in range(n_c):
-        vpos = np.array([viewpoints[j, 0:3] for j, c in enumerate(cluster_assignment) if c == i+1])
-        G.append(vpos)
-        bp = [set(sample_kd_tree.query_ball_point(p, ell)) for p in vpos]
+        vpose = np.array([viewpoints[j] for j, c in enumerate(cluster_assignment) if c == i+1])
+        vpos = vpose[:, 0:3]
+        vorientation = vpose[:, 3:6]
+        G.append(vpose)
+        bp = [set(sample_kd_tree.query_ball_point(p, ell)) for p in vpos]  # query basepositions within an arm length
         common_bp = set.intersection(*bp)
-        base_pos_candidates  = np.array([sample_kd_tree.data[p] for p in common_bp])
+        # Filter base positions behind the viewpoints
+        base_pos_candidates = []
+        for idx in common_bp:
+            base_position = sample_kd_tree.data[idx]
+            feasible = True
+            # TODO: Uncomment
+            # for vp in vpose:
+            #     feasible = feasible and check_inline(vp[0:2], base_position[:2], -vp[4:6], arm_angle, 0.1)
+            if feasible:
+                base_pos_candidates.append(base_position)
+        if len(base_pos_candidates) == 0:
+            raise Exception("No base positions found for a cluster.")
+        base_pos_candidates  = np.array(base_pos_candidates)
         # vpos_bp_dist: each row corresponds to a viewpoint and column to a base position; 
         # entry is euclidean distance between the two
-        vpos_bp_dist = distance.cdist(vpos, base_pos_candidates)
-        # Choose base position with min total distance. What would be other metrics?
+        vpos_bp_dist = distance.cdist(vpose[:, 0:3], base_pos_candidates)
+        # Choose base position with min total distance. 
+        # TODO: What would be other metrics?
         opt_bp_idx = vpos_bp_dist.sum(axis=0).argmin()
         opt_bp_pos = base_pos_candidates[opt_bp_idx]
         opt_bp_pos[2] = 0  # set position height to ground level
         # TODO: Determine base orientation
         B[i, 0:2] = opt_bp_pos[0:2]
+    
+    return B, G
+
+
+def plot_freespace(rr, ell, boundary, n_samples):
+    """
+    param
+        rr: robot radius for calculating obstacle free space
+        ell: arm length reachable viewpoints
+        boundary: perimeter of free space around obstacle
+        n_samples: number of points in PRM
+    """
+    viewpoints = np.load(CWD + "/viewpoints.npy")
+    mesh_model, facets, incidence_normals, mesh_centers, n = load_mesh(TANK)
+    obstacles = create_obstacles(facets)
+    obstacle_kd_tree = cKDTree(obstacles)
+    print("PRM sample points")
+    sample_x, sample_y = sample_points(rr, obstacle_kd_tree, boundary, n_samples)
+    
+    print("Building road map")
+    road_map, sample_kd_tree = generate_road_map(sample_x, sample_y, rr, obstacle_kd_tree, height=.5)
+
+    B, G = cluster_base_position(ell, viewpoints, sample_kd_tree, road_map)
+
 
     # Plot PRM, obstacle, and viewpoints
     plt.scatter(sample_kd_tree.data[:,0], sample_kd_tree.data[:,1], c='b', alpha=.2)
     plt.scatter(obstacle_kd_tree.data[:,0], obstacle_kd_tree.data[:,1], c='k', alpha=.2)
     # Draw a Circle with arm_length radius around each viewpoint
+    n_c = B.shape[0]
     cmap = plt.cm.rainbow
-    norm = matplotlib.colors.Normalize(vmin=0, vmax=max(cluster_assignment))
-    for i in range(n_vp):
-        g = viewpoints[i]
-        
+    norm = matplotlib.colors.Normalize(vmin=0, vmax=n_c)
     # Plot base position and corresponding viewpoint
     for i in range(n_c):
         b = B[i]

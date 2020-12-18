@@ -23,9 +23,8 @@ from mpl_toolkits import mplot3d
 from os.path import exists, join
 import os
 import sys
-from geometry_msgs.msg import Pose, PoseArray
 from probabilistic_road_map import sample_points, generate_road_map, dijkstra_planning
-
+from geometry_msgs.msg import PoseStamped, Pose
 from scipy.spatial.transform import Rotation as R
 import rospkg
 r = rospkg.RosPack()
@@ -33,16 +32,31 @@ path  = r.get_path('robowork_planning')
 path += "/scripts/"
 print(path)
 sys.path.append(path)
-# from get_ik import GetIK
+from get_ik import GetIK
+from geometry_msgs.msg import Pose, PoseArray
+from moveit_msgs.srv import GetPositionIK
+from moveit_msgs.srv import GetPositionIKRequest
+from moveit_msgs.srv import GetPositionIKResponse
+from moveit_msgs.srv import GetPositionFK
+from moveit_msgs.srv import GetPositionFKRequest
+from moveit_msgs.srv import GetPositionFKResponse
+from moveit_msgs.msg import MoveItErrorCodes
+from sensor_msgs.msg import JointState
+from geometry_msgs.msg import PoseStamped, Pose
+from std_msgs.msg import Header
+import numpy as np
 import rospy
+from pyquaternion import Quaternion
+from visualization_msgs.msg import Marker, MarkerArray
+from scipy.spatial.transform import Rotation as R
 
 # Set input viewpoint constraints
 INCIDENCE_ANGLE = np.pi / 6  # 30deg
-DMIN = 0.1  # [m]
+DMIN = 0.6  # [m]
 DMAX = 2  # [m]
 CEILING = 2  # [m]
 FLOOR = 0.1  # [m]
-ROBOT_RADIUS = 0.5  # [m]
+ROBOT_RADIUS = 0.75  # [m]
 ARM_LENGTH = 0.7  # [m]
 HEIGHT = .5  # robot arm base height
 TANK = "Mesh/ElevatedTank.stl"  # object to inspect
@@ -260,7 +274,7 @@ def ray_tracing(goal_idx, p_0, d, facets, normals):
     return True
 
 
-def compute_visible_points(region, point, points, normals, viewed_points, arm_length, free_space_kdtree,
+def compute_visible_points(region, point, points, normals, viewed_points, arm_length, free_space_kdtree, model_kd_tree,
                         fov_angle=np.pi/4, incidence_angle=INCIDENCE_ANGLE, dmin=DMIN, dmax=DMAX, floor=FLOOR, ceiling=CEILING):
     """
     From each viewpoint, calculate the number of points this viewpoint can see. Return viewpoint that sees the most unique coverage.
@@ -301,6 +315,10 @@ def compute_visible_points(region, point, points, normals, viewed_points, arm_le
             # viewpoint within arm length. Check IK solution is feasible.
             # Get IK solution for closest free
             pass
+        # Check if any points in the model are closer than dmin
+        nn = model_kd_tree.query_ball_point(viewpoint, dmin)
+        if len(nn) > 0:
+            continue
 
         viewpoint_dir = point - viewpoint
         viewpoint_dir = viewpoint_dir / norm(viewpoint_dir)
@@ -319,17 +337,17 @@ def compute_visible_points(region, point, points, normals, viewed_points, arm_le
         incidence_visible = np.arccos(incidence_cos_theta) <= incidence_angle
         # Filter points that haven't been seen yet
         unseen_boundary = viewed_points == 0
-        
+        # 
         visible_points = np.all(np.stack((view_vector_distance, fov_visible, incidence_visible, unseen_boundary), axis=1), axis=1)
         visible_point_indices = np.argwhere(visible_points).squeeze()
 
         # Ray-tracing to determine if there's a facet in front of this line of sight
-        ray_trace_visible = []
-        for point_idx in visible_point_indices:
-            facet_idx = point_idx // 3  # divide by three to get facet indexes
-            if ray_tracing(facet_idx, viewpoint, viewpoint_dir, facets, facet_normals):
-                ray_trace_visible.append(point_idx)
-        visible_point_indices = np.array(ray_trace_visible)
+        # ray_trace_visible = []
+        # for point_idx in visible_point_indices:
+        #     facet_idx = point_idx // 3  # divide by three to get facet indexes
+        #     if ray_tracing(facet_idx, viewpoint, viewpoint_dir, facets, facet_normals):
+        #         ray_trace_visible.append(point_idx)
+        # visible_point_indices = np.array(ray_trace_visible)
 
         if visible_point_indices.size > viewpoint_visible_point_count:
             viewpoint_visible_point_indices = visible_point_indices
@@ -538,6 +556,7 @@ def dual_viewpoint_sampling(polygon, robot_radius, arm_length, height, mu=500, c
     mesh_model, facets, unit_norms, mesh_centers, n = load_mesh(polygon)
     unit_norms = np.array([val for val in unit_norms for _ in range(3)])
     points = mesh_model.points.reshape(-1, 3)
+    model_kd_tree = cKDTree(points)
     num_points = points.shape[0]
     # Initialize set list of viewpoints
     viewpoint_set = []
@@ -563,10 +582,10 @@ def dual_viewpoint_sampling(polygon, robot_radius, arm_length, height, mu=500, c
         # 2.
         # Select viewpoint with highest coverage and return viewpoint position and unseen points
         try:
-            viewpoint, unseen, viewed_points = compute_visible_points(region, point, points, unit_norms, unseen, arm_length, free_space_kdtree)
+            viewpoint, unseen, viewed_points = compute_visible_points(region, point, points, unit_norms, unseen, arm_length, free_space_kdtree, model_kd_tree)
             viewpoint_set.append(viewpoint)
             viewed_points_set.append(viewed_points)
-            print("{np.sum(unseen == 0)} / {unseen.shape[0]} mesh points unseen")
+            print(f"{np.sum(unseen == 0)} / {unseen.shape[0]} mesh points unseen")
 
         except Exception:
             unseen[point_idx] = 2
@@ -677,7 +696,8 @@ def collision_check(m_input, location, normal):
     # Input mesh
     # m_input = o3d.io.read_triangle_mesh(mesh)
     # m_input = o3d.geometry.TriangleMesh.create_cone(0.1, 0.3, 20,1)
-    pose = pose_from_vector3D(np.hstack((location,normal)))
+    offset = np.array([0,0,0],dtype=np.float64)
+    pose = pose_from_vector3D(np.hstack((location,normal)),offset)
     rot = o3d.geometry.TriangleMesh.get_rotation_matrix_from_quaternion(np.array([pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w]))
     tx = np.zeros((4,4))
     tx[:3,:3] = rot
@@ -709,7 +729,7 @@ def collision_check(m_input, location, normal):
 # Returns true if in collision
 def collision_check_with_robot_model(m_input, location, orientation):
     # SET HERE THE SIZE OF THE ROBOT. The m_test is a box representing the robot.
-    m_test = o3d.geometry.TriangleMesh.create_box(0.8, 0.8, 0.5)
+    m_test = o3d.geometry.TriangleMesh.create_sphere(0.7)
     rot = o3d.geometry.TriangleMesh.get_rotation_matrix_from_quaternion(np.array([orientation[1], orientation[2], orientation[3], orientation[0]]))
     tx = np.zeros((4,4))
     tx[:3,:3] = rot
@@ -723,11 +743,13 @@ def collision_check_with_robot_model(m_input, location, orientation):
         # print("Intersecting")
         return True
     else:
+        # m_test.paint_uniform_color([1,0.7,0])
+        # o3d.visualization.draw_geometries([m_input, m_test])
         return False
 
-def  pose_from_vector3D(waypoint):
+def  pose_from_vector3D(waypoint, offset):
     #http://lolengine.net/blog/2013/09/18/beautiful-maths-quaternion-from-vectors
-    offset  = np.array([1.5, 2.5, 0], dtype=np.float64)
+    # offset  = np.array([1.5, 2.5, 0], dtype=np.float64)
 
     pose= Pose()
     pose.position.x = waypoint[0] + offset[0]
@@ -767,9 +789,11 @@ def  pose_from_vector3D(waypoint):
 def getPoseArray(viewpoints):
 
     pa = PoseArray()
+    offset  = np.array([1.5, 2.5, 0], dtype=np.float64)
+
     print("viewpoints len = ", len(viewpoints))
     for i in range(len(viewpoints)):
-        p = pose_from_vector3D(viewpoints[i])
+        p = pose_from_vector3D(viewpoints[i],offset)
         pa.poses.append(p)
 
     pa.header.frame_id = 'map'
@@ -777,10 +801,23 @@ def getPoseArray(viewpoints):
     return pa
 
 
+def getPoseArrayNoOffset(viewpoints):
+
+    pa = PoseArray()
+    offset  = np.array([0.0,0.0, 0.0], dtype=np.float64)
+    print("viewpoints len = ", len(viewpoints))
+    for i in range(len(viewpoints)):
+        p = pose_from_vector3D(viewpoints[i],offset)
+        pa.poses.append(p)
+
+    pa.header.frame_id = 'map'
+    pa.header.stamp = rospy.Time.now()
+    return pa
+
 def height_filter(g):
 
     max_arm_reach = 1.7
-    min_arm_reach = 0.25
+    min_arm_reach = 0.10
     if g[2]> max_arm_reach or g[2]<min_arm_reach:
         return False
     else:
@@ -817,6 +854,39 @@ def getValidVP(viewpoints):
     # o3d.visualization.draw_geometries(arrow_arr)
     
     return np.array(filter_vp)
+
+def getValidVPAndB(viewpoints, basepoints):
+
+    filter_vp = []
+    filter_bp = []
+    mesh = o3d.io.read_triangle_mesh(TANK)
+    arrow_arr = []
+    for i in range(len(viewpoints)):
+        g = viewpoints[i][:3]
+        v = viewpoints[i][3:]
+        # print("vp = ",viewpoints[i])
+        # print("g = ",g)
+        # print("v = ",v)
+        reachable = height_filter(g)
+        collision, arrow = collision_check(mesh,g,v)
+        # arrow.paint_uniform_color([1, 0.706, 0])
+        if(collision):
+            arrow.paint_uniform_color([1, 0.706, 0])
+        if(not reachable):
+            arrow.paint_uniform_color([0.706, 1, 0])
+        if(not collision and reachable):
+            arrow.paint_uniform_color([0, 0.706, 1])
+            filter_vp.append(viewpoints[i])
+            filter_bp.append(basepoints[i])
+        arrow_arr.append(arrow)
+
+    axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=1.0, origin=np.array([0., 0., 0.]))
+
+    # arrow_arr.append(mesh)
+    # arrow_arr.append(axis)
+    # o3d.visualization.draw_geometries(arrow_arr)
+    
+    return np.array(filter_vp), np.array(filter_bp)
 
 
 def getPlanePoints(viewpoints, plane, sign):
@@ -929,16 +999,25 @@ def seperate_points_to_clusters(points, clusters, orientations):
 #Note: Clusterization does not consider the viewpoint angles
 def clusterize_viewpoints(posearr):
   locations, orientations = posearray_to_nparrays(posearr)
-  distance_threshold = 1.5
+  distance_threshold = 0.35
   clusters = hcluster.fclusterdata(locations, distance_threshold, criterion="distance")
   return seperate_points_to_clusters(locations, clusters, orientations)
+
+def baseCompliantOrientation(orientation):
+    r = R.from_quat(orientation)
+    ypr = r.as_euler('zyx', degrees=False)
+    r_prime = R.from_euler('z',ypr[0],degrees=False)
+    return np.array(r_prime.as_quat())
+
 
 
 def check_ik(base_location, base_orientation, viewpoint_location, viewpoint_orientation):
   # print("base_orientation type = {}, shape = {}", type(base_orientation),base_orientation.shape)
+  return True
   PLANNING_GROUP_ = "main_arm_SIM"
   ik_ob = GetIK(group=PLANNING_GROUP_)
-
+  bs_orientation = baseCompliantOrientation(base_orientation)
+  
   arm_pose = PoseStamped()
   arm_pose.header.frame_id = 'map'
   arm_pose.pose.position.x = viewpoint_location[0]
@@ -953,19 +1032,40 @@ def check_ik(base_location, base_orientation, viewpoint_location, viewpoint_orie
   base_pose.header.frame_id = 'map'
   base_pose.pose.position.x = base_location[0]
   base_pose.pose.position.y = base_location[1]
-  base_pose.pose.position.z = base_location[2]
-  base_pose.pose.orientation.x = base_orientation[0]
-  base_pose.pose.orientation.y = base_orientation[1]
-  base_pose.pose.orientation.z = base_orientation[2]
-  base_pose.pose.orientation.w = base_orientation[3]
+  base_pose.pose.position.z = 0.0
+  base_pose.pose.orientation.x = bs_orientation[0]
+  base_pose.pose.orientation.y = bs_orientation[1]
+  base_pose.pose.orientation.z = bs_orientation[2]
+  base_pose.pose.orientation.w = bs_orientation[3]
   response = ik_ob.get_ik(arm_pose, base_pose)
   print("ik response code", response.error_code)
   if(response.error_code.val == MoveItErrorCodes.SUCCESS):
-      # print("ik found\n")
     return True
   else:
-    # print("No solution found ")
     return False
+    # return True
+
+def vector_from_quaternion(q):
+    q1 = Quaternion(q.w, q.x, q.y, q.z)
+    x = np.array([1.0, 0.0, 0.0],dtype=np.float64)
+    v = q1.rotate(x)
+    return v
+
+
+# def quaternion_to_euler(w, x, y, z):
+#    """Converts quaternions with components w, x, y, z into a tuple (roll, pitch, yaw)"""
+#     sinr_cosp = 2 * (w * x + y * z)
+#     cosr_cosp = 1 - 2 * (x**2 + y**2)
+#     roll = np.arctan2(sinr_cosp, cosr_cosp)
+#     sinp = 2 * (w * y - z * x)
+#     pitch = np.where(np.abs(sinp) >= 1,
+#                      np.sign(sinp) * np.pi / 2,
+#                      np.arcsin(sinp))
+#     siny_cosp = 2 * (w * z + x * y)
+#     cosy_cosp = 1 - 2 * (y**2 + z**2)
+#     yaw = np.arctan2(siny_cosp, cosy_cosp)
+#     return roll, pitch, yaw
+
 
 
 # cluster is a np array of points
@@ -973,11 +1073,15 @@ def get_base_location_for_cluster(position_cluster, orientation_cluster):
   cluster_center = np.mean(position_cluster, axis=0)
   # project center to ground
   cluster_center[2] = 0
-  projected_circle_radius = 1
-  base_offset_from_ground = 0.2
+  projected_circle_radius = 2
+  base_offset_from_ground = 0.4
   mesh = o3d.io.read_triangle_mesh(TANK)
 
-  for i in range(100):
+  best_position = np.array([0, 0, 0.])
+  best_orientation = np.array([0,0,0,0.])
+  best_feasible = 0
+
+  for i in range(1000):
     # Sample point for base location in a circle around the projected cluster_center
     length = np.sqrt(np.random.uniform(0, projected_circle_radius))
     angle = np.pi * np.random.uniform(0, 2)
@@ -991,9 +1095,15 @@ def get_base_location_for_cluster(position_cluster, orientation_cluster):
     if not collision_check_with_robot_model(mesh, base_location, base_orientation):
       # The location is not in collision with the object mesh and now the ik should be checked for all points in the position_cluster
       all_ik_feasible = False
+      current_feasible = 0
       for j in range(len(position_cluster)):
         if not check_ik(base_location, base_orientation, position_cluster[j], orientation_cluster[j]):
           break
+        current_feasible += 1
+        if current_feasible > best_feasible:
+            best_feasible = current_feasible
+            best_position = base_location
+            best_orientation = base_orientation
         if j == (len(position_cluster) - 1):
           all_ik_feasible = True
       if all_ik_feasible:
@@ -1001,7 +1111,7 @@ def get_base_location_for_cluster(position_cluster, orientation_cluster):
     else: 
       print("in collision")
   print('Fatal: Unable to find a possible base location after 100 tries. Maybe try increasing the projected_circle_radius? Voxblox could also be reporting the collision with the ground. This can be fixed by increasing the base_offset')
-  
+  return best_position, best_orientation
 
 def np_to_pose(position, orientation):
   p = Pose()
@@ -1015,10 +1125,30 @@ def np_to_pose(position, orientation):
   p.orientation.z = orientation[3]
   return p
 
+def getMarker(pose_, color, id_, ns):
+    marker = Marker()
+    marker.header.frame_id = 'map'
+    marker.header.stamp = rospy.Time.now()
+    marker.ns = ns
+    marker.id = id_
+    marker.type = 0
+    marker.action = 0
+    marker.pose = pose_
+    # marker.scale.x
+    # marker.lifetime = rospy.Duration()
+    marker.scale.x = 1.0
+    marker.scale.y = 20.0
+    marker.scale.z = 1.0
+    marker.color.r = color[0]
+    marker.color.g = color[1]
+    marker.color.b = color[2]
+    marker.color.a = 1.0
+    return marker
 
 def main():
     rospy.init_node('viewpointg_gen', anonymous=True)
     viewpoint_pub = rospy.Publisher('viewpoints',PoseArray,queue_size=5, latch=True)
+    viewpoint_cluster_pub = rospy.Publisher('viewpoint_cluster',MarkerArray,queue_size=5, latch=True)
     base_poses_pub = rospy.Publisher('base_poses',PoseArray,queue_size=5, latch=True)
 
     viewpoints, sample_kdtree, road_map = dual_viewpoint_sampling(TANK, ROBOT_RADIUS, ARM_LENGTH, HEIGHT, plot=False)
@@ -1026,14 +1156,14 @@ def main():
     # print("viewpoint shape = ", filtered_vp.shape)
 
     rate = rospy.Rate(5)
-    posearr = getPoseArray(filtered_vp)
+    posearr = getPoseArrayNoOffset(filtered_vp)
     print("old vp = {} filteredvp = {}".format(viewpoints.shape,filtered_vp.shape))
 
     # Now we have the final viewpoints for the camera. They need to be clustered, the base location needs to be found for each cluster and then two pose arrays need to be published in a new message
     clustered_positions, clustered_orientations = clusterize_viewpoints(posearr)
     print("sizes: ")
-    print(len(clustered_positions))
-    print(len(clustered_orientations))
+    print("clustered_positions",len(clustered_positions))
+    print("clustered_orientations",len(clustered_orientations))
     clustered_base_positions = []
     clustered_base_orientations = []
     for i in range(len(clustered_positions)):
@@ -1051,19 +1181,42 @@ def main():
     # convert all clusters back to two pose arrays
     ee_posearr = PoseArray()
     b_posearr = PoseArray()
+    m_array = MarkerArray()
+    offset = np.array([1.5,2.5,0],dtype=np.float64)
     for i in range(len(clustered_positions)):
       base_pose = np_to_pose(clustered_base_positions[i], clustered_base_orientations[i])
+      color = np.random.randint(0,255,size=3)
       for j in range(len(clustered_positions[i])):
         print (i, j)
         viewpoint_pose = np_to_pose(clustered_positions[i][j], clustered_orientations[i][j])
+        viewpoint_pose.position.x += offset[0]
+        viewpoint_pose.position.y += offset[1]
+        base_pose.position.x += offset[0]
+        base_pose.position.y += offset[1]
+        id_ = j
+        ns = str(i)
+        marker = getMarker(viewpoint_pose, color, id_, ns)
         ee_posearr.poses.append(viewpoint_pose)
         b_posearr.poses.append(base_pose)
+        m_array.markers.append(marker)
+
+    # for i in range(len(b_posearr.poses)):
+    #     v = vector_from_quaternion(b_posearr.poses[i].orientation)
+    #     v[2] = 0.0
+    #     offset = np.array([0,0,0], dtype=np.float64)
+    #     waypoint = np.zeros((6,), dtype=np.float64)
+    #     waypoint[3:] = v
+    #     b_posearr.poses[i].orientation =  pose_from_vector3D(waypoint,offset).orientation
+        
 
     # offset_filtered_vp = getOffsetVP(filtered_vp)
     # ac = getClusters(offset_filtered_vp)
+    ee_posearr.header.frame_id = "map"
+    b_posearr.header.frame_id = "map"
     while(not rospy.is_shutdown()):
         viewpoint_pub.publish(ee_posearr)
         base_poses_pub.publish(b_posearr)
+        viewpoint_cluster_pub.publish(m_array)
         rate.sleep()
    
     # stuff = load_mesh(TANK)
@@ -1076,8 +1229,33 @@ def main():
 def viewpoint_base_generate():
     viewpoints, sample_kdtree, road_map = dual_viewpoint_sampling(TANK, ROBOT_RADIUS, ARM_LENGTH, HEIGHT, plot=False)
     B, G = cluster_base_position(ARM_LENGTH, viewpoints, sample_kdtree, road_map)
-    return B, G
+
+    rospy.init_node('viewpointg_gen', anonymous=True)
+    viewpoint_pub = rospy.Publisher('viewpoints',PoseArray,queue_size=5, latch=True)
+    base_poses_pub = rospy.Publisher('base_poses',PoseArray,queue_size=5, latch=True)
+    rate = rospy.Rate(5)
+    # Flatten viewpoint list of lists
+    G_flat = []
+    B_flat = []
+    for i, V in enumerate(G):
+        b = B[i]
+        b[3:5] = V[0, 3:5]
+        for v in V:
+            B_flat.append(b)
+            G_flat.append(v)
+
+    G_flat,B_flat = getValidVPAndB(G_flat,B_flat)
+    # G_flat = np.array(G_flat)
+    # B_flat = np.array(B_flat)
+    G_pose = getPoseArray(G_flat)
+    B_pose = getPoseArray(B_flat)
+    while(not rospy.is_shutdown()):
+        viewpoint_pub.publish(G_pose)
+        base_poses_pub.publish(B_pose)
+        rate.sleep()
+    
 
 
 if __name__ == "__main__":
     viewpoint_base_generate()
+    # main()

@@ -663,8 +663,9 @@ def plot_freespace(rr, ell, boundary, n_samples):
             plt.gcf().gca().add_artist(circle)
 
     plt.axis('equal')
+    print("Show viewpoint plan")
     plt.show()
-
+    
 
 def main():
     print(__file__ + " start!!")

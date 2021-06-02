@@ -1226,7 +1226,13 @@ def main():
     # sample_cone_region(dmin=.7, plot=True)
 
 
-def viewpoint_base_generate():
+def viewpoint_base_generate(plot=False):
+    viewpoints, sample_kdtree, road_map = dual_viewpoint_sampling(TANK, ROBOT_RADIUS, ARM_LENGTH, HEIGHT, plot=plot)
+    B, G = cluster_base_position(ARM_LENGTH, viewpoints, sample_kdtree, road_map)
+    return B, G
+
+
+def publish_to_ros(B, G):
     viewpoints, sample_kdtree, road_map = dual_viewpoint_sampling(TANK, ROBOT_RADIUS, ARM_LENGTH, HEIGHT, plot=False)
     B, G = cluster_base_position(ARM_LENGTH, viewpoints, sample_kdtree, road_map)
 
@@ -1255,7 +1261,6 @@ def viewpoint_base_generate():
         rate.sleep()
     
 
-
 if __name__ == "__main__":
-    viewpoint_base_generate()
+    viewpoint_base_generate(plot=True)
     # main()
